@@ -1,12 +1,25 @@
-#include<stdio.h>
-#include<stdlib.h>
-#include<string.h>
-#include<math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <assert.h>
+
+
+
+#define MAGIC_NUMBER 0xC0EDBABE
+#define VERSION 1
+#define ALGORITHM_HUFFMAN 1
+
 
 #define DWORD unsigned long long
 #define WORD unsigned int
 #define EPSILON 0.00001f
 #define BYTE unsigned char
+
+#define NEWICK_RECURSE_LEFT 97
+#define NEWICK_RECURSE_RIGHT 98
+#define NEWICK_POP 99
+#define NEWICK_SYMBOL 100
 
 /* TODO
 	- definition of compressed file format
@@ -15,8 +28,10 @@
 		- algorithm: 1 BYTE
 		- algorithm data:
 			- symbol length in bits: 1 WORD
+			- symbol count: 1 DWORD
 			- dictionary
-				- newick string "((A, (C, D)), B)"
+				- newick command string lendgth:  1 DWORD
+				- newick command string "((A, (C, D)), B)"
 			- number of remainder bits at last BYTE: 2 bits
 			- bitstream
 		- crc: 1 DWORD
@@ -35,6 +50,7 @@ struct symbol_info
 	struct symbol m_symbol;
 };
 
+
 struct node
 {
 	struct node *m_left; // 1
@@ -42,11 +58,22 @@ struct node
 	struct symbol_info m_symbol_info;
 };
 
+
+struct newick_structure
+{
+	DWORD m_num_symbols;
+	BYTE *m_symbols;
+	DWORD m_num_commands;
+	BYTE *m_commands;
+
+	int m_symbol_index;
+	int m_command_index;
+};
+
 struct huffman_format
 {
-	WORD m_symbol_length;
-	char *m_newick_string;
-	BYTE m_remainder_bits : 2;
+	struct newick_structure m_newick;
+	BYTE m_remainder_bits;
 	BYTE *m_bytestream;
 };
 
@@ -83,8 +110,15 @@ DWORD get_file_size(FILE *source);
 void print_frequency_table();
 void make_tree();
 
-char * newick_from_tree(struct node *head);
-struct node * tree_from_newick(const char *newick_string);
+void initialize_newick_structure(struct newick_structure *newick);
+void print_newick_structure(struct newick_structure *newick);
+void write_newick(FILE *fp,struct newick_structure *newick);
+void read_newick(FILE *fp,struct newick_structure *newick);
+
+void newick_from_tree(struct node *head, struct newick_structure *newick);
+struct node *tree_from_newick(struct newick_structure *newick);
+
+
 
 /////////////////////////////
 // Public Functions
@@ -115,13 +149,29 @@ int main(int argc, char *argv[])
 				memset(g_representation, 0, sizeof(char)*g_representation_length);
 				make_tree();
 
-				char *newick_string = NULL;
-				newick_string = newick_from_tree(g_root);
-				printf("---newick_string: %s\n", newick_string);
+				//process the input file to the output file
+				struct compressed_file_format meta;
+				meta.m_magic_number = MAGIC_NUMBER;
+				meta.m_version_number = VERSION;
+				meta.m_algorithm_id = ALGORITHM_HUFFMAN;
 
-				struct node *test = tree_from_newick(newick_string);
-				newick_string = newick_from_tree(test);
-				printf("---newick_string: %s\n", newick_string);
+				struct huffman_format huffman;
+				BYTE m_remainder_bits;
+				BYTE *m_bytestream;
+
+				//dictionary representation
+				{
+					initialize_newick_structure(&huffman.m_newick);
+
+					newick_from_tree(g_root,&huffman.m_newick);
+					print_newick_structure(&huffman.m_newick);
+				}
+
+				fwrite(&meta.m_magic_number,sizeof(meta.m_magic_number),1,g_output);
+				fwrite(&meta.m_version_number,sizeof(meta.m_version_number),1,g_output);
+				fwrite(&meta.m_algorithm_id,sizeof(meta.m_algorithm_id),1,g_output);
+
+				write_newick(g_output,&huffman.m_newick);
 
 				process_file(source, compress_buffer);
 				if (g_bit_index != 7)
@@ -414,163 +464,227 @@ void make_tree()
 	printf("root count[%d]\n", g_root->m_symbol_info.m_count);
 }
 
-char * newick_from_tree_recurse(struct node *head, char **buffer, int *buffer_size_cur, int *buffer_size_max)
-{
-	if (*buffer_size_cur == *buffer_size_max)
-	{
-		*buffer_size_max += 100;
-		*buffer = (char *)realloc(*buffer, sizeof(char) * (*buffer_size_max));
-	}
 
+
+
+void initialize_newick_structure(struct newick_structure *newick)
+{
+	newick->m_num_symbols = 0;
+	newick->m_symbols = NULL;
+	newick->m_num_commands = 0;
+	newick->m_commands = NULL;
+
+	newick->m_symbol_index = -1;
+	newick->m_command_index = -1;
+}
+
+void add_symbol_to_newick_structure(struct newick_structure *newick,BYTE addition)
+{
+	newick->m_symbols = (BYTE *)realloc(newick->m_symbols,sizeof(BYTE)*(newick->m_num_symbols+1));
+	newick->m_symbols[newick->m_num_symbols] = addition;
+	newick->m_num_symbols++;
+}
+
+void add_command_to_newick_structure(struct newick_structure *newick,BYTE addition)
+{
+	newick->m_commands = (BYTE *)realloc(newick->m_commands,sizeof(BYTE)*(newick->m_num_commands+1));
+	newick->m_commands[newick->m_num_commands] = addition;
+	newick->m_num_commands++;
+}
+
+
+void print_newick_structure(struct newick_structure *newick)
+{
+	printf("Newick Structure:\n");
+	printf("  Symbols Count[%d]  Symbols[%*s]\n",(int)newick->m_num_symbols,(int)newick->m_num_symbols,newick->m_symbols);
+	printf("  Commands Count[%d]  Commands[%*s]\n",(int)newick->m_num_commands,(int)newick->m_num_commands,newick->m_commands);
+}
+
+void write_newick(FILE *fp,struct newick_structure *newick)
+{
+	fwrite(&(newick->m_num_symbols),sizeof(newick->m_num_symbols),1,fp);
+	fwrite(newick->m_symbols,sizeof(BYTE),newick->m_num_symbols,fp);
+
+	fwrite(&(newick->m_num_commands),sizeof(newick->m_num_commands),1,fp);
+	fwrite(newick->m_commands,sizeof(BYTE),newick->m_num_commands,fp);
+}
+
+void read_newick(FILE *fp,struct newick_structure *newick)
+{
+	fread(&(newick->m_num_symbols),sizeof(newick->m_num_symbols),1,fp);
+	fread(newick->m_symbols,sizeof(BYTE),newick->m_num_symbols,fp);
+
+	fread(&(newick->m_num_commands),sizeof(newick->m_num_commands),1,fp);
+	fread(newick->m_commands,sizeof(BYTE),newick->m_num_commands,fp);
+}
+
+
+BYTE read_newick_command(struct newick_structure *newick)
+{
+	BYTE result;
+
+	result = newick->m_commands[newick->m_command_index];
+	newick->m_command_index++;
+
+	return result;
+}
+
+BYTE read_newick_symbol(struct newick_structure *newick)
+{
+	BYTE result;
+
+	result = newick->m_symbols[newick->m_symbol_index];
+	newick->m_symbol_index++;
+
+	return result;
+}
+
+
+void newick_from_tree(struct node *head, struct newick_structure *newick)
+{
 	if (head != NULL)
 	{
 		if (head->m_left == NULL && head->m_right == NULL)
 		{
-			(*buffer)[(*buffer_size_cur)++] = (char)head->m_symbol_info.m_symbol.m_value;		
+			add_command_to_newick_structure(newick,NEWICK_SYMBOL);
+			add_symbol_to_newick_structure(newick,head->m_symbol_info.m_symbol.m_value);
 		}
 		else
 		{
-			(*buffer)[(*buffer_size_cur)++] = '(';
-			newick_from_tree_recurse(head->m_left, buffer, buffer_size_cur, buffer_size_max);
-			(*buffer)[(*buffer_size_cur)++] = ',';
-			newick_from_tree_recurse(head->m_right, buffer, buffer_size_cur, buffer_size_max);
-			(*buffer)[(*buffer_size_cur)++] = ')';
-		}
-	}
-	else
-	{
-		*buffer = strdup("()");
-	}
-	return *buffer;
-}
-
-char * newick_from_tree(struct node *head)
-{
-	char *buffer;
-	int buffer_size_cur;
-	int buffer_size_max;
-
-	buffer = NULL;
-	buffer_size_cur = 0;
-	buffer_size_max = 0;
-
-	return newick_from_tree_recurse(head, &buffer, &buffer_size_cur, &buffer_size_max);
-}
-
-int tdepth = 0;
-bool tflag = false;
-int max_dist = -1;
-const char *ridge = NULL;
-void tree_from_newick_recurse(struct node **tree, const char *newick_string)
-{
-	tdepth++;
-	if (newick_string - ridge > max_dist)
-	{
-		max_dist = newick_string - ridge;
-	}
-
-	printf("b\n");
-	
-	*tree = (struct node *)malloc(sizeof(struct node));
-	(*tree)->m_left = NULL;
-	(*tree)->m_right = NULL;
-	(*tree)->m_symbol_info.m_count = -1;
-
-	printf("tree: %p %p %p %c %d %d\n", tree, *tree,(*tree)->m_left, *newick_string, tdepth, max_dist);
-
-	if (*newick_string == '(')
-	{
-		printf("e\n");
-		tree_from_newick_recurse(&((*tree)->m_left), ++newick_string);
-		tree_from_newick_recurse(&((*tree)->m_right), ++newick_string);
-	}
-	else
-	{
-		// printf("f\n");
-		if (*newick_string == ',')
-		{
-			printf("g\n");
-			tree_from_newick_recurse(&((*tree)->m_right), ++newick_string);
-			// printf("h\n");
-		}
-		else if (*newick_string != ')')
-		{
-			printf("i\n");
-			(*tree)->m_symbol_info.m_symbol.m_value = *newick_string;
-			// tree_from_newick_recurse(tree, ++newick_string);
-			// printf("j\n");
+			add_command_to_newick_structure(newick,NEWICK_RECURSE_LEFT);
+			newick_from_tree(head->m_left, newick);
+			add_command_to_newick_structure(newick,NEWICK_RECURSE_RIGHT);
+			newick_from_tree(head->m_right, newick);
+			add_command_to_newick_structure(newick,NEWICK_POP);
 		}
 	}
 }
 
-int parens = 0;
-
-//(((f,(i,b)),((c,s),d)),a)
-void tree_from_newick_recurse_blah(struct node **tree,const char *newick_string)
+struct node *make_node()
 {
-	tdepth++;
-	if (newick_string - ridge > max_dist)
-	{
-		max_dist = newick_string - ridge;
-	}
-	
+	struct node *result;
 
-	printf("tree: %c %d %d\n", *newick_string, tdepth, max_dist);
+	result = (struct node *)malloc(sizeof(struct node));
+	result->m_left = NULL;
+	result->m_right = NULL;
+	result->m_symbol_info.m_count = -1;
+	result->m_symbol_info.m_symbol.m_value = 255;
 
-	do
-	{
-		char pervious_char;
-
-		pervious_char = *newick_string;
-		newick_string++;
-		if (pervious_char == '(')
-		{
-			parens++;
-		}
-		else
-		{
-			if (pervious_char == ')')
-			{
-				parens--;
-			}
-			else
-			{
-				*tree = (struct node *)malloc(sizeof(struct node));
-				(*tree)->m_left = NULL;
-				(*tree)->m_right = NULL;
-				(*tree)->m_symbol_info.m_count = -1;
-
-				if (pervious_char != ',')
-				{
-					(*tree)->m_symbol_info.m_symbol.m_value = pervious_char;
-					printf("FOUND VALUE[%c]\n",pervious_char);
-				}
-				else
-				{
-					tree_from_newick_recurse_blah(&((*tree)->m_left), newick_string);
-					tree_from_newick_recurse_blah(&((*tree)->m_right), newick_string);
-				}
-//				tree_from_newick_recurse_blah(tree,newick_string);
-			}
-		}
-	}
-	while (parens > 0);
-
-	tdepth--;
-}
-
-
-
-struct node * tree_from_newick(const char *newick_string)
-{
-	struct node *result = NULL;
-	ridge = newick_string;
-	printf("a\n");
-
-	tree_from_newick_recurse_blah(&result,newick_string);
-	//tree_from_newick_recurse(&result, newick_string);
 	return result;
 }
+
+bool is_symbol(char test)
+{
+	bool result;
+
+
+	result = true;
+
+	if (test == '(' || test == ',' || test == ')' || test == '\0')
+	{
+		result = false;
+	}
+
+	return result;
+}
+
+//(((f,(i,b)),((c,s),d)),a)
+struct node *tree_from_newick(struct newick_structure *newick)
+{
+	struct node *result;
+	BYTE command;
+
+//	printf("\n");
+
+	result = NULL;
+	result = make_node();
+
+//	printf("tree: %c\n",**newick_string);
+
+	command = read_newick_command(newick);
+ 
+	if (command == NEWICK_RECURSE_LEFT)
+	{
+//		printf("LEFT\n");
+		result->m_left = tree_from_newick(newick);
+	}
+
+	if (command == NEWICK_SYMBOL)
+	{
+		BYTE symbol;
+
+		symbol = read_newick_symbol(newick);
+//		printf("FOUND VALUE[%c]\n",**newick_string);
+		result->m_symbol_info.m_symbol.m_value = symbol;
+	}
+	else
+	{
+		if (command == NEWICK_RECURSE_RIGHT)
+		{
+			result->m_right = tree_from_newick(newick);
+		}
+
+		if (command == NEWICK_POP)
+		{
+//			(*newick_string)++;
+		}
+	}
+
+//	printf("POP\n");
+
+	return result;
+}
+
+/*
+struct node *tree_from_newick_recurse(struct newick_structure *newick)
+{
+	struct node *result;
+
+//	printf("\n");
+
+	result = NULL;
+	result = make_node();
+
+//	printf("tree: %c\n",**newick_string);
+
+ 
+	if (**newick_string == '(')
+	{
+		(*newick_string)++;
+
+//		printf("LEFT\n");
+		result->m_left = tree_from_newick_recurse(newick_string);
+	}
+
+	if (is_symbol(**newick_string))
+	{
+//		printf("FOUND VALUE[%c]\n",**newick_string);
+		result->m_symbol_info.m_symbol.m_value = **newick_string;
+
+		(*newick_string)++;		
+	}
+	else
+	{
+		if (**newick_string == ',')
+		{
+			(*newick_string)++;
+//			printf("RIGHT\n");
+			result->m_right = tree_from_newick_recurse(newick_string);
+		}
+
+		if (**newick_string == ')')
+		{
+			(*newick_string)++;
+		}
+	}
+
+//	printf("POP\n");
+
+	return result;
+}
+
+
+*/
 
 DWORD get_file_size(FILE *source)
 {
