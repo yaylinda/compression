@@ -4,16 +4,24 @@
 #include<math.h>
 
 #define DWORD unsigned long long
+#define WORD unsigned int
 #define EPSILON 0.00001f
 #define BYTE unsigned char
 
 /* TODO
-	- define file format
-	- at a minimum include:
-		- dictionary (g_root)
-		- number of bits?
-		- bitstream
+	- definition of compressed file format
+		- magic number: 1 DWORD
+		- version number: 1 WORD
+		- algorithm: 1 BYTE
+		- algorithm data:
+			- symbol length in bits: 1 WORD
+			- dictionary
+				- newick string "((A, (C, D)), B)"
+			- number of remainder bits at last BYTE: 2 bits
+			- bitstream
+		- crc: 1 DWORD
 */
+
 /////////////////////////////
 // Private Structures
 struct symbol
@@ -32,6 +40,23 @@ struct node
 	struct node *m_left; // 1
 	struct node *m_right; // 0
 	struct symbol_info m_symbol_info;
+};
+
+struct huffman_format
+{
+	WORD m_symbol_length;
+	char *m_newick_string;
+	BYTE m_remainder_bits : 2;
+	BYTE *m_bytestream;
+};
+
+struct compressed_file_format
+{
+	DWORD m_magic_number;
+	WORD m_version_number;
+	BYTE m_algorithm_id;
+	struct huffman_format m_data;
+	DWORD crc;
 };
 
 /////////////////////////////
@@ -58,6 +83,8 @@ DWORD get_file_size(FILE *source);
 void print_frequency_table();
 void make_tree();
 
+char * newick_from_tree(struct node *head);
+struct node * tree_from_newick(const char *newick_string);
 
 /////////////////////////////
 // Public Functions
@@ -87,6 +114,15 @@ int main(int argc, char *argv[])
 				g_representation = (char *) malloc(sizeof(char)*g_representation_length);
 				memset(g_representation, 0, sizeof(char)*g_representation_length);
 				make_tree();
+
+				char *newick_string = NULL;
+				newick_string = newick_from_tree(g_root);
+				printf("---newick_string: %s\n", newick_string);
+
+				struct node *test = tree_from_newick(newick_string);
+				newick_string = newick_from_tree(test);
+				printf("---newick_string: %s\n", newick_string);
+
 				process_file(source, compress_buffer);
 				if (g_bit_index != 7)
 				{
@@ -233,7 +269,7 @@ int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		{
 			write_bit(g_representation[j]);
 		}
-		printf("symbol[%c], representation[%s]\n", c, g_representation);
+		// printf("symbol[%c], representation[%s]\n", c, g_representation);
 		total_bits += depth;
 	}	
 	return -1;
@@ -376,6 +412,161 @@ void make_tree()
 	}
 
 	printf("root count[%d]\n", g_root->m_symbol_info.m_count);
+}
+
+char * newick_from_tree_recurse(struct node *head, char **buffer, int *buffer_size_cur, int *buffer_size_max)
+{
+	if (*buffer_size_cur == *buffer_size_max)
+	{
+		*buffer_size_max += 100;
+		*buffer = (char *)realloc(*buffer, sizeof(char) * (*buffer_size_max));
+	}
+
+	if (head != NULL)
+	{
+		if (head->m_left == NULL && head->m_right == NULL)
+		{
+			(*buffer)[(*buffer_size_cur)++] = (char)head->m_symbol_info.m_symbol.m_value;		
+		}
+		else
+		{
+			(*buffer)[(*buffer_size_cur)++] = '(';
+			newick_from_tree_recurse(head->m_left, buffer, buffer_size_cur, buffer_size_max);
+			(*buffer)[(*buffer_size_cur)++] = ',';
+			newick_from_tree_recurse(head->m_right, buffer, buffer_size_cur, buffer_size_max);
+			(*buffer)[(*buffer_size_cur)++] = ')';
+		}
+	}
+	else
+	{
+		*buffer = strdup("()");
+	}
+	return *buffer;
+}
+
+char * newick_from_tree(struct node *head)
+{
+	char *buffer;
+	int buffer_size_cur;
+	int buffer_size_max;
+
+	buffer = NULL;
+	buffer_size_cur = 0;
+	buffer_size_max = 0;
+
+	return newick_from_tree_recurse(head, &buffer, &buffer_size_cur, &buffer_size_max);
+}
+
+int tdepth = 0;
+bool tflag = false;
+int max_dist = -1;
+const char *ridge = NULL;
+void tree_from_newick_recurse(struct node **tree, const char *newick_string)
+{
+	tdepth++;
+	if (newick_string - ridge > max_dist)
+	{
+		max_dist = newick_string - ridge;
+	}
+
+	printf("b\n");
+	
+	*tree = (struct node *)malloc(sizeof(struct node));
+	(*tree)->m_left = NULL;
+	(*tree)->m_right = NULL;
+	(*tree)->m_symbol_info.m_count = -1;
+
+	printf("tree: %p %p %p %c %d %d\n", tree, *tree,(*tree)->m_left, *newick_string, tdepth, max_dist);
+
+	if (*newick_string == '(')
+	{
+		printf("e\n");
+		tree_from_newick_recurse(&((*tree)->m_left), ++newick_string);
+		tree_from_newick_recurse(&((*tree)->m_right), ++newick_string);
+	}
+	else
+	{
+		// printf("f\n");
+		if (*newick_string == ',')
+		{
+			printf("g\n");
+			tree_from_newick_recurse(&((*tree)->m_right), ++newick_string);
+			// printf("h\n");
+		}
+		else if (*newick_string != ')')
+		{
+			printf("i\n");
+			(*tree)->m_symbol_info.m_symbol.m_value = *newick_string;
+			// tree_from_newick_recurse(tree, ++newick_string);
+			// printf("j\n");
+		}
+	}
+}
+
+int parens = 0;
+
+//(((f,(i,b)),((c,s),d)),a)
+void tree_from_newick_recurse_blah(struct node **tree,const char *newick_string)
+{
+	tdepth++;
+	if (newick_string - ridge > max_dist)
+	{
+		max_dist = newick_string - ridge;
+	}
+	
+
+	printf("tree: %c %d %d\n", *newick_string, tdepth, max_dist);
+
+	do
+	{
+		char pervious_char;
+
+		pervious_char = *newick_string;
+		newick_string++;
+		if (pervious_char == '(')
+		{
+			parens++;
+		}
+		else
+		{
+			if (pervious_char == ')')
+			{
+				parens--;
+			}
+			else
+			{
+				*tree = (struct node *)malloc(sizeof(struct node));
+				(*tree)->m_left = NULL;
+				(*tree)->m_right = NULL;
+				(*tree)->m_symbol_info.m_count = -1;
+
+				if (pervious_char != ',')
+				{
+					(*tree)->m_symbol_info.m_symbol.m_value = *newick_string;
+				}
+				tree_from_newick_recurse_blah(&((*tree)->m_left), newick_string);
+				tree_from_newick_recurse_blah(&((*tree)->m_right), newick_string);
+
+//				tree_from_newick_recurse_blah(tree,newick_string);
+			}
+		}
+	}
+	while (parens > 0);
+
+	tdepth--;
+}
+
+
+
+struct node * tree_from_newick(const char *newick_string)
+{
+	struct node *result = NULL;
+	ridge = newick_string;
+	printf("a\n");
+
+	tree_from_newick_recurse_blah(&result,newick_string);
+	//tree_from_newick_recurse(&result, newick_string);
+	return result;
 }
 
 DWORD get_file_size(FILE *source)
