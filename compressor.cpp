@@ -152,7 +152,7 @@ int main(int argc, char *argv[])
 
 				if (process_file_test)
 				{
-					print_frequency_table();
+				//	print_frequency_table();
 					g_representation_length = g_num_symbols;
 					g_representation = (char *) malloc(sizeof(char)*g_representation_length);
 					memset(g_representation, 0, sizeof(char)*g_representation_length);
@@ -170,7 +170,7 @@ int main(int argc, char *argv[])
 						initialize_newick_structure(&g_meta.m_huffman.m_newick);
 
 						newick_from_tree(g_root,&g_meta.m_huffman.m_newick);
-						print_newick_structure(&g_meta.m_huffman.m_newick);
+			//			print_newick_structure(&g_meta.m_huffman.m_newick);
 					}
 
 					fwrite(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,g_output);
@@ -203,7 +203,7 @@ int main(int argc, char *argv[])
 
 						fseek(g_output, remainder_bits_position, SEEK_SET);
 						fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
-						printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+		//				printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
 						fseek(g_output, 0, SEEK_END);
 					}
 
@@ -229,11 +229,11 @@ int main(int argc, char *argv[])
 
 				read_newick(source,&g_meta.m_huffman.m_newick);
 
-				print_newick_structure(&g_meta.m_huffman.m_newick);
+		//		print_newick_structure(&g_meta.m_huffman.m_newick);
 
 
 				fread(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(g_meta.m_huffman.m_number_of_remainder_bits), 1, source);
-				printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+	//			printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
 
 				g_root = tree_from_newick(&g_meta.m_huffman.m_newick);
 
@@ -363,7 +363,7 @@ void write_bit(char c)
 
 	if (g_bit_index == -1)
 	{
-		printf("g_bitstring written[%d]\n", g_bitstring);
+//		printf("g_bitstring written[%d]\n", g_bitstring);
 		fwrite(&g_bitstring, sizeof(BYTE), 1, g_output);
 		g_bitstring = 0;
 		g_bit_index = 7;
@@ -396,7 +396,7 @@ bool decode_symbol(char c,BYTE *decoded_symbol)
 	if (s_cursor->m_left == NULL && s_cursor->m_right == NULL)
 	{
 		s_representation[s_fuckers] = '\0';
-		printf("rep[%s] fuck[%d]\n",s_representation,s_fuckers);
+//		printf("rep[%s] fuck[%d]\n",s_representation,s_fuckers);
 		s_fuckers = 0;
 		s_representation[0] = '\0';
 		result = true;
@@ -417,7 +417,7 @@ int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		found = false;
 		depth = 0;
 		find_symbol(c, g_root);
-		 printf("symbol[%c], representation[%s] depth[%d]\n", c, g_representation,depth);
+//		 printf("symbol[%c], representation[%s] depth[%d]\n", c, g_representation,depth);
 		for (j=0; j<depth; j++)
 		{
 			write_bit(g_representation[j]);
@@ -434,7 +434,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	int i;
 	BYTE decoded_symbol;
 
-	printf("decoompress buffer\n");
+//	printf("decompress buffer\n");
 
 	for (i = 0;i < process_size;i++)
 	{
@@ -443,7 +443,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		s_current_processed_total++;
 
 		cur_byte = source_buffer[i];
-		printf("cur_byte[%d]\n", cur_byte);
+	//	printf("cur_byte[%d]\n", cur_byte);
 
 		//magic linda code here..
 		//..need to know if the byte we're deoding is the last byte in the file.
@@ -476,7 +476,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 				if (j + g_meta.m_huffman.m_number_of_remainder_bits == 8)
 				{
 
-					printf("[%d][%d][%d]found our last byte and the last legitimate bit\n",j,s_current_processed_total,g_remainder_bits_position_within_source_buffer);
+	//				printf("[%d][%d][%d]found our last byte and the last legitimate bit\n",j,s_current_processed_total,g_remainder_bits_position_within_source_buffer);
 					break;
 				}
 			}
@@ -504,7 +504,7 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 
 	int pos;
 	pos = ftell(source);
-	printf("Processing File from [%d]\n",pos);
+//	printf("Processing File from [%d]\n",pos);
 
 	printf("[");
 
@@ -592,7 +592,7 @@ void make_tree()
 
 		total += nodes[i]->m_symbol_info.m_count;
 	}
-	printf("total in make tree[%d]\n", total);
+//	printf("total in make tree[%d]\n", total);
 
 	while (true)
 	{
@@ -640,7 +640,7 @@ void make_tree()
 		nodes[min_node_1] = additional;
 	}
 
-	printf("root count[%d]\n", g_root->m_symbol_info.m_count);
+//	printf("root count[%d]\n", g_root->m_symbol_info.m_count);
 }
 
 
