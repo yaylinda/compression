@@ -542,11 +542,14 @@ void tree_from_newick_recurse_blah(struct node **tree,const char *newick_string)
 
 				if (pervious_char != ',')
 				{
-					(*tree)->m_symbol_info.m_symbol.m_value = *newick_string;
+					(*tree)->m_symbol_info.m_symbol.m_value = pervious_char;
+					printf("FOUND VALUE[%c]\n",pervious_char);
 				}
-				tree_from_newick_recurse_blah(&((*tree)->m_left), newick_string);
-				tree_from_newick_recurse_blah(&((*tree)->m_right), newick_string);
-
+				else
+				{
+					tree_from_newick_recurse_blah(&((*tree)->m_left), newick_string);
+					tree_from_newick_recurse_blah(&((*tree)->m_right), newick_string);
+				}
 //				tree_from_newick_recurse_blah(tree,newick_string);
 			}
 		}
