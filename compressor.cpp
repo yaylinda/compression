@@ -4,12 +4,9 @@
 #include <math.h>
 #include <assert.h>
 
-
-
 #define MAGIC_NUMBER 0xC0EDBABE
 #define VERSION 1
 #define ALGORITHM_HUFFMAN 1
-
 
 #define DWORD unsigned long long
 #define WORD unsigned int
@@ -35,6 +32,8 @@
 			- number of remainder bits at last BYTE: 2 bits
 			- bitstream
 		- crc: 1 DWORD
+
+	- 
 */
 
 /////////////////////////////
@@ -57,7 +56,6 @@ struct node
 	struct node *m_right; // 0
 	struct symbol_info m_symbol_info;
 };
-
 
 struct newick_structure
 {
@@ -102,7 +100,7 @@ static int g_remainder_bits_position_within_source_buffer = 0;
 
 /////////////////////////////
 // Private Prototypes
-bool open_files(const char *source_filename, const char *dest_filename, FILE **source, FILE **dest);
+bool open_file(const char* filename, FILE **fp, bool is_source);
 
 int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size);
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
@@ -137,10 +135,14 @@ int main(int argc, char *argv[])
 	else
 	{
 		FILE *source;
-		bool open_files_test;
-		open_files_test = open_files(argv[2], argv[3], &source, &g_output);
+		bool open_file_1_test;
+		bool open_file_2_test;
 
-		if (open_files_test) 
+		open_file_1_test = open_file(argv[2], &source, true);
+		open_file_2_test = open_file(argv[3], &g_output, false);
+		// open_files_test = open_files(argv[2], argv[3], &source, &g_output);
+
+		if (open_file_1_test && open_file_2_test) 
 		{
 			bool compress = (argv[1][0] == 'c' || argv[1][0] == 'C');
 			if (compress)
@@ -262,28 +264,26 @@ int main(int argc, char *argv[])
 
 /////////////////////////////
 // Private Functions
-bool open_files(const char* source_filename, const char* dest_filename, FILE **source, FILE **dest)
+bool open_file(const char* filename, FILE **fp, bool is_source)
 {
-	// read file
 	bool result = false;
 
-	*source = fopen(source_filename, "rb");
-	if (*source != NULL) 
+	if (is_source == true)
 	{
-		*dest = fopen(dest_filename, "wb");
-		if (*dest != NULL)
-		{
-			result = true;
-		}
-		else
-		{
-			printf("Could not open destination file for writing.\n");
-		}
-
-	} 
+		*fp = fopen(filename, "rb");
+	}
 	else
 	{
-		printf("Could not open source file for reading.\n");
+		*fp = fopen(filename, "wb");
+	}
+
+	if (*fp != NULL)
+	{
+		result = true;
+	}
+	else
+	{
+		printf("Problem opening file [%s].\n", filename);
 	}
 
 	return result;
@@ -511,21 +511,24 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 	while (amount_left > 0)
 	{
 		int amount_read;
-		int amount_written;
-		amount_read = fread(source_buffer, sizeof(source_buffer[0]), sizeof(source_buffer), (FILE*)source);
-	
 		int amount_processed;
+
+		/* SEAN, why is this returning 0 when doing second read when decompressing? */
+		amount_read = fread(source_buffer, sizeof(source_buffer[0]), sizeof(source_buffer), (FILE*)source);
+		
 		amount_processed = lambda(source_buffer, sizeof(source_buffer), amount_read);
 		
+		printf("%s %llu\n", "amount_left", amount_left);
+
 		amount_left -= amount_read;
 		
 		float current_percentile;
 
-		// printf("%s %d\n", "amount_read", amount_read);
+		printf("%s %d\n", "amount_read", amount_read);
 		current_percentile = (float)(source_size - amount_left) / source_size;
-		// printf("%s %f\n", "current_percentile", current_percentile);
+		printf("%s %f\n", "current_percentile", current_percentile);
 		diff_percentile += current_percentile - previous_percentile;
-		// printf("%s %f\n", "diff_percentile", diff_percentile);
+		printf("%s %f\n", "diff_percentile", diff_percentile);
 		
 		bool flag = false;
 		while ((diff_percentile + EPSILON) > increment)
@@ -547,7 +550,7 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 		}
 	}
 
-	printf("]\n");
+	printf("] done.\n");
 
 	return result;
 }
