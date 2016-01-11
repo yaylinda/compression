@@ -73,7 +73,7 @@ struct newick_structure
 struct huffman_format
 {
 	struct newick_structure m_newick;
-	BYTE m_remainder_bits;
+	BYTE m_number_of_remainder_bits;
 	BYTE *m_bytestream;
 };
 
@@ -82,7 +82,7 @@ struct compressed_file_format
 	DWORD m_magic_number;
 	WORD m_version_number;
 	BYTE m_algorithm_id;
-	struct huffman_format m_data;
+	struct huffman_format m_huffman;
 	DWORD crc;
 };
 
@@ -97,6 +97,8 @@ static FILE *g_output = NULL;
 static int total_bits = 0;
 static BYTE g_bitstring = 0;
 static int g_bit_index = 7;
+static struct compressed_file_format g_meta;
+static int g_remainder_bits_position_within_source_buffer = 0;
 
 /////////////////////////////
 // Private Prototypes
@@ -104,6 +106,8 @@ bool open_files(const char *source_filename, const char *dest_filename, FILE **s
 
 int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size);
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
+
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int));
 
 DWORD get_file_size(FILE *source);
@@ -118,74 +122,133 @@ void read_newick(FILE *fp,struct newick_structure *newick);
 void newick_from_tree(struct node *head, struct newick_structure *newick);
 struct node *tree_from_newick(struct newick_structure *newick);
 
-
-
 /////////////////////////////
 // Public Functions
 int main(int argc, char *argv[])
 {
 	int result = 20;
 
-	if (argc != 3) 
+	if (argc != 4) 
 	{
-		printf("Usage: test source-filename dest-filename.\n");
+		printf("Usage: compressor OPTION source-filename dest-filename.\n");
+		printf("OPTION = c -> compress; OPTION = d -> decompress\n");
 		result = 0;
 	} 
 	else
 	{
 		FILE *source;
 		bool open_files_test;
-		open_files_test = open_files(argv[1], argv[2], &source, &g_output);
+		open_files_test = open_files(argv[2], argv[3], &source, &g_output);
+
 		if (open_files_test) 
 		{
-			bool process_file_test;
-			process_file_test = process_file(source, update_frequency_table);
-
-			if (process_file_test)
+			bool compress = (argv[1][0] == 'c' || argv[1][0] == 'C');
+			if (compress)
 			{
-				print_frequency_table();
-				g_representation_length = g_num_symbols;
-				g_representation = (char *) malloc(sizeof(char)*g_representation_length);
-				memset(g_representation, 0, sizeof(char)*g_representation_length);
-				make_tree();
+				bool process_file_test;
 
-				//process the input file to the output file
-				struct compressed_file_format meta;
-				meta.m_magic_number = MAGIC_NUMBER;
-				meta.m_version_number = VERSION;
-				meta.m_algorithm_id = ALGORITHM_HUFFMAN;
+				fseek(source, 0, SEEK_SET);
+				process_file_test = process_file(source, update_frequency_table);
 
-				struct huffman_format huffman;
-				BYTE m_remainder_bits;
-				BYTE *m_bytestream;
-
-				//dictionary representation
+				if (process_file_test)
 				{
-					initialize_newick_structure(&huffman.m_newick);
+					print_frequency_table();
+					g_representation_length = g_num_symbols;
+					g_representation = (char *) malloc(sizeof(char)*g_representation_length);
+					memset(g_representation, 0, sizeof(char)*g_representation_length);
+					make_tree();
 
-					newick_from_tree(g_root,&huffman.m_newick);
-					print_newick_structure(&huffman.m_newick);
+					
+					//process the input file to the output file
+					g_meta.m_magic_number = MAGIC_NUMBER;
+					g_meta.m_version_number = VERSION;
+					g_meta.m_algorithm_id = ALGORITHM_HUFFMAN;
+					
+
+					//dictionary representation
+					{
+						initialize_newick_structure(&g_meta.m_huffman.m_newick);
+
+						newick_from_tree(g_root,&g_meta.m_huffman.m_newick);
+						print_newick_structure(&g_meta.m_huffman.m_newick);
+					}
+
+					fwrite(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,g_output);
+					fwrite(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,g_output);
+					fwrite(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,g_output);
+
+					write_newick(g_output,&g_meta.m_huffman.m_newick);
+
+					int remainder_bits_position;
+					remainder_bits_position = ftell(g_output);
+
+
+					//write some dummy data to acount for what could be
+					g_meta.m_huffman.m_number_of_remainder_bits = 0;
+					fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
+
+
+					fseek(source, 0, SEEK_SET);
+					process_file(source, compress_buffer);
+
+
+					if (g_bit_index != 7)
+					{
+						g_meta.m_huffman.m_number_of_remainder_bits = 7 - g_bit_index;
+
+						if (g_meta.m_huffman.m_number_of_remainder_bits > 0)
+						{
+							fwrite(&g_bitstring, sizeof(BYTE), 1, g_output);
+						}
+
+						fseek(g_output, remainder_bits_position, SEEK_SET);
+						fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
+						printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+						fseek(g_output, 0, SEEK_END);
+					}
+
+
+					printf("total_bits[%d]\n", total_bits);
+					fclose(source);
+					fclose(g_output);
+					result = 0;
 				}
-
-				fwrite(&meta.m_magic_number,sizeof(meta.m_magic_number),1,g_output);
-				fwrite(&meta.m_version_number,sizeof(meta.m_version_number),1,g_output);
-				fwrite(&meta.m_algorithm_id,sizeof(meta.m_algorithm_id),1,g_output);
-
-				write_newick(g_output,&huffman.m_newick);
-
-				process_file(source, compress_buffer);
-				if (g_bit_index != 7)
+				else
 				{
-					fwrite(&g_bitstring, sizeof(BYTE), 1, g_output);
+					result = 1;
 				}
-				printf("total_bits[%d]\n", total_bits);
-				fclose(source);
-				fclose(g_output);
-				result = 0;
 			}
 			else
 			{
-				result = 1;
+				fread(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,source);
+				assert(g_meta.m_magic_number == MAGIC_NUMBER);
+				fread(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,source);
+				assert(g_meta.m_version_number == VERSION);
+				fread(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,source);
+				assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN);
+
+				read_newick(source,&g_meta.m_huffman.m_newick);
+
+				print_newick_structure(&g_meta.m_huffman.m_newick);
+
+
+				fread(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(g_meta.m_huffman.m_number_of_remainder_bits), 1, source);
+				printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+
+				g_root = tree_from_newick(&g_meta.m_huffman.m_newick);
+
+				{
+					int cur;
+					cur = ftell(source);
+					fseek(source,0,SEEK_END);
+					g_remainder_bits_position_within_source_buffer = ftell(source) - cur;
+					fseek(source,cur,SEEK_SET);
+				}
+
+				process_file(source, decompress_buffer);
+
+				fclose(source);
+				fclose(g_output);		
 			}
 		}
 		else
@@ -245,7 +308,7 @@ int update_frequency_table(const BYTE *source_buffer, int max_size, int process_
 		if (j == g_num_symbols)
 		{
 			g_num_symbols++;
-			g_symbols = (struct symbol_info *) realloc(g_symbols, sizeof(struct symbol_info)*g_num_symbols);
+			g_symbols = (struct symbol_info *)realloc(g_symbols, sizeof(struct symbol_info)*g_num_symbols);
 			g_symbols[g_num_symbols-1].m_count = 1;
 			g_symbols[g_num_symbols-1].m_symbol.m_value = c; 
 		}
@@ -266,7 +329,8 @@ void find_symbol(BYTE symbol, struct node *current_node)
 	if (current_node->m_symbol_info.m_symbol.m_value == symbol)
 	{
 		found = true;
-		g_representation[depth-1] = '\0';
+		depth--;
+		g_representation[depth] = '\0';
 	}
 	else
 	{
@@ -299,10 +363,48 @@ void write_bit(char c)
 
 	if (g_bit_index == -1)
 	{
+		printf("g_bitstring written[%d]\n", g_bitstring);
 		fwrite(&g_bitstring, sizeof(BYTE), 1, g_output);
 		g_bitstring = 0;
 		g_bit_index = 7;
 	}
+}
+
+bool decode_symbol(char c,BYTE *decoded_symbol)
+{
+	static char s_representation[100] = {0};
+	static int s_fuckers = 0;
+	static struct node *s_cursor = g_root;
+	bool result;
+
+	result = false;
+
+	s_representation[s_fuckers++] = c;
+
+	if (c == '1')
+	{
+		s_cursor = s_cursor->m_left;
+	}
+	else
+	{
+		if (c == '0')
+		{
+			s_cursor = s_cursor->m_right;
+		}
+	}
+
+	if (s_cursor->m_left == NULL && s_cursor->m_right == NULL)
+	{
+		s_representation[s_fuckers] = '\0';
+		printf("rep[%s] fuck[%d]\n",s_representation,s_fuckers);
+		s_fuckers = 0;
+		s_representation[0] = '\0';
+		result = true;
+		*decoded_symbol = s_cursor->m_symbol_info.m_symbol.m_value;
+		s_cursor = g_root;
+	}
+
+	return result;
 }
 
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
@@ -315,13 +417,72 @@ int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		found = false;
 		depth = 0;
 		find_symbol(c, g_root);
+		 printf("symbol[%c], representation[%s] depth[%d]\n", c, g_representation,depth);
 		for (j=0; j<depth; j++)
 		{
 			write_bit(g_representation[j]);
 		}
-		// printf("symbol[%c], representation[%s]\n", c, g_representation);
 		total_bits += depth;
 	}	
+	return -1;
+}
+
+
+int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
+{
+	static int s_current_processed_total = 0;
+	int i;
+	BYTE decoded_symbol;
+
+	printf("decoompress buffer\n");
+
+	for (i = 0;i < process_size;i++)
+	{
+		BYTE cur_byte;
+		int j;
+		s_current_processed_total++;
+
+		cur_byte = source_buffer[i];
+		printf("cur_byte[%d]\n", cur_byte);
+
+		//magic linda code here..
+		//..need to know if the byte we're deoding is the last byte in the file.
+		//... If it IS, then we need to make sure we respect ONLY the meta.huffman.remainder_bits worth of that last byte.
+		// (the subsequent bits are garbage)
+
+		for (j = 7;j >= 0;j--)
+		{
+			char bit;
+			bool test;
+
+			if (cur_byte & (1 << j))
+			{
+				bit = '1';
+			}
+			else
+			{
+				bit = '0';
+			}
+
+			test = decode_symbol(bit,&decoded_symbol);
+
+			if (test == true)
+			{
+				fwrite(&decoded_symbol,sizeof(decoded_symbol),1,g_output);
+			}
+
+			if (s_current_processed_total == g_remainder_bits_position_within_source_buffer)
+			{
+				if (j + g_meta.m_huffman.m_number_of_remainder_bits == 8)
+				{
+
+					printf("[%d][%d][%d]found our last byte and the last legitimate bit\n",j,s_current_processed_total,g_remainder_bits_position_within_source_buffer);
+					break;
+				}
+			}
+		}
+	}
+
 	return -1;
 }
 
@@ -341,7 +502,9 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 	DWORD amount_left;
 	amount_left = source_size;
 
-	fseek(source, 0, SEEK_SET);
+	int pos;
+	pos = ftell(source);
+	printf("Processing File from [%d]\n",pos);
 
 	printf("[");
 
@@ -437,18 +600,34 @@ void make_tree()
 		int min_node_2;
 
 		struct node * node_1;
+		int node_1_count;
 		struct node * node_2;
+		int node_2_count;
 		struct node * additional;
 
+		node_1 = NULL;
+		node_1_count = 0;
+		node_2 = NULL;
+		node_2_count = 0;
+
 		min_node_1 = find_min_node(num_nodes, nodes);
-		node_1 = nodes[min_node_1];
-		nodes[min_node_1] = NULL;
+		if (min_node_1 != -1)
+		{
+			node_1= nodes[min_node_1];
+			nodes[min_node_1] = NULL;
+			node_1_count = node_1->m_symbol_info.m_count;
+		}
+		
 		min_node_2 = find_min_node(num_nodes, nodes);
-		node_2 = nodes[min_node_2];
-		nodes[min_node_2] = NULL;
+		if (min_node_2 != -1)
+		{
+			node_2 = nodes[min_node_2];
+			nodes[min_node_2] = NULL;
+			node_2_count = node_2->m_symbol_info.m_count;
+		}	
 
 		additional = (struct node *) malloc(sizeof(struct node));
-		additional->m_symbol_info.m_count = node_1->m_symbol_info.m_count + node_2->m_symbol_info.m_count;
+		additional->m_symbol_info.m_count = node_1_count + node_2_count;
 		additional->m_left = node_1;
 		additional->m_right = node_2;
 
@@ -474,8 +653,8 @@ void initialize_newick_structure(struct newick_structure *newick)
 	newick->m_num_commands = 0;
 	newick->m_commands = NULL;
 
-	newick->m_symbol_index = -1;
-	newick->m_command_index = -1;
+	newick->m_symbol_index = 0;
+	newick->m_command_index = 0;
 }
 
 void add_symbol_to_newick_structure(struct newick_structure *newick,BYTE addition)
@@ -512,9 +691,11 @@ void write_newick(FILE *fp,struct newick_structure *newick)
 void read_newick(FILE *fp,struct newick_structure *newick)
 {
 	fread(&(newick->m_num_symbols),sizeof(newick->m_num_symbols),1,fp);
+	newick->m_symbols = (BYTE*)malloc(sizeof(BYTE)*(newick->m_num_symbols));
 	fread(newick->m_symbols,sizeof(BYTE),newick->m_num_symbols,fp);
 
 	fread(&(newick->m_num_commands),sizeof(newick->m_num_commands),1,fp);
+	newick->m_commands = (BYTE*)malloc(sizeof(BYTE)*(newick->m_num_commands));
 	fread(newick->m_commands,sizeof(BYTE),newick->m_num_commands,fp);
 }
 
@@ -592,99 +773,51 @@ bool is_symbol(char test)
 struct node *tree_from_newick(struct newick_structure *newick)
 {
 	struct node *result;
-	BYTE command;
+	static BYTE s_command;
 
-//	printf("\n");
+	// printf("\n");
 
 	result = NULL;
 	result = make_node();
 
-//	printf("tree: %c\n",**newick_string);
 
-	command = read_newick_command(newick);
+	s_command = read_newick_command(newick);
+	// printf("command: %c\n",s_command);
+
  
-	if (command == NEWICK_RECURSE_LEFT)
+	if (s_command == NEWICK_RECURSE_LEFT)
 	{
-//		printf("LEFT\n");
+		// printf("LEFT\n");
 		result->m_left = tree_from_newick(newick);
 	}
 
-	if (command == NEWICK_SYMBOL)
+	if (s_command == NEWICK_SYMBOL)
 	{
 		BYTE symbol;
 
 		symbol = read_newick_symbol(newick);
-//		printf("FOUND VALUE[%c]\n",**newick_string);
+		// printf("FOUND VALUE[%c]\n",symbol);
 		result->m_symbol_info.m_symbol.m_value = symbol;
+		s_command = read_newick_command(newick);
 	}
 	else
 	{
-		if (command == NEWICK_RECURSE_RIGHT)
+		if (s_command == NEWICK_RECURSE_RIGHT)
 		{
+			// printf("RIGHT\n");
 			result->m_right = tree_from_newick(newick);
 		}
 
-		if (command == NEWICK_POP)
+		if (s_command == NEWICK_POP)
 		{
-//			(*newick_string)++;
+			s_command = read_newick_command(newick);
 		}
 	}
 
-//	printf("POP\n");
+	// printf("POP\n");
 
 	return result;
 }
-
-/*
-struct node *tree_from_newick_recurse(struct newick_structure *newick)
-{
-	struct node *result;
-
-//	printf("\n");
-
-	result = NULL;
-	result = make_node();
-
-//	printf("tree: %c\n",**newick_string);
-
- 
-	if (**newick_string == '(')
-	{
-		(*newick_string)++;
-
-//		printf("LEFT\n");
-		result->m_left = tree_from_newick_recurse(newick_string);
-	}
-
-	if (is_symbol(**newick_string))
-	{
-//		printf("FOUND VALUE[%c]\n",**newick_string);
-		result->m_symbol_info.m_symbol.m_value = **newick_string;
-
-		(*newick_string)++;		
-	}
-	else
-	{
-		if (**newick_string == ',')
-		{
-			(*newick_string)++;
-//			printf("RIGHT\n");
-			result->m_right = tree_from_newick_recurse(newick_string);
-		}
-
-		if (**newick_string == ')')
-		{
-			(*newick_string)++;
-		}
-	}
-
-//	printf("POP\n");
-
-	return result;
-}
-
-
-*/
 
 DWORD get_file_size(FILE *source)
 {
