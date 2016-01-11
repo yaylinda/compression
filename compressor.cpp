@@ -10,7 +10,8 @@
 
 #define DWORD unsigned long long
 #define WORD unsigned int
-#define EPSILON 0.00001f
+#define EPSILON 0.0001f
+#define NUM_PROGRESS_BARS 20
 #define BYTE unsigned char
 
 #define NEWICK_RECURSE_LEFT 97
@@ -33,7 +34,8 @@
 			- bitstream
 		- crc: 1 DWORD
 
-	- 
+	- fix progress bar when decompressing []
+	- change 
 */
 
 /////////////////////////////
@@ -48,7 +50,6 @@ struct symbol_info
 	int m_count;
 	struct symbol m_symbol;
 };
-
 
 struct node
 {
@@ -106,7 +107,7 @@ int update_frequency_table(const BYTE *source_buffer, int max_size, int process_
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
 int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
 
-bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int));
+bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size);
 
 DWORD get_file_size(FILE *source);
 void print_frequency_table();
@@ -140,7 +141,6 @@ int main(int argc, char *argv[])
 
 		open_file_1_test = open_file(argv[2], &source, true);
 		open_file_2_test = open_file(argv[3], &g_output, false);
-		// open_files_test = open_files(argv[2], argv[3], &source, &g_output);
 
 		if (open_file_1_test && open_file_2_test) 
 		{
@@ -150,7 +150,7 @@ int main(int argc, char *argv[])
 				bool process_file_test;
 
 				fseek(source, 0, SEEK_SET);
-				process_file_test = process_file(source, update_frequency_table);
+				process_file_test = process_file(source, update_frequency_table, get_file_size(source));
 
 				if (process_file_test)
 				{
@@ -191,7 +191,7 @@ int main(int argc, char *argv[])
 
 
 					fseek(source, 0, SEEK_SET);
-					process_file(source, compress_buffer);
+					process_file(source, compress_buffer, get_file_size(source));
 
 
 					if (g_bit_index != 7)
@@ -239,15 +239,14 @@ int main(int argc, char *argv[])
 
 				g_root = tree_from_newick(&g_meta.m_huffman.m_newick);
 
-				{
-					int cur;
-					cur = ftell(source);
-					fseek(source,0,SEEK_END);
-					g_remainder_bits_position_within_source_buffer = ftell(source) - cur;
-					fseek(source,cur,SEEK_SET);
-				}
+				
+				int cur;
+				cur = ftell(source);
+				fseek(source,0,SEEK_END);
+				g_remainder_bits_position_within_source_buffer = ftell(source) - cur;
+				fseek(source,cur,SEEK_SET);
 
-				process_file(source, decompress_buffer);
+				process_file(source, decompress_buffer, get_file_size(source)-cur);
 
 				fclose(source);
 				fclose(g_output);		
@@ -486,25 +485,16 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	return -1;
 }
 
-bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
+bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size)
 {
-	bool result = true;
-
-	float previous_percentile = 0.0f;
-	float diff_percentile = 0.0f;
-	const float increment = 0.05f;
-
-	DWORD source_size;
-	source_size = get_file_size(source);
-
+	bool result;
 	BYTE source_buffer[2048];
-
 	DWORD amount_left;
-	amount_left = source_size;
+	float current_bar_percentile;
 
-	int pos;
-	pos = ftell(source);
-//	printf("Processing File from [%d]\n",pos);
+	result = true;
+	current_bar_percentile = 0.0f;
+	amount_left = source_size;
 
 	printf("[");
 
@@ -513,35 +503,22 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 		int amount_read;
 		int amount_processed;
 
-		/* SEAN, why is this returning 0 when doing second read when decompressing? */
 		amount_read = fread(source_buffer, sizeof(source_buffer[0]), sizeof(source_buffer), (FILE*)source);
-		
 		amount_processed = lambda(source_buffer, sizeof(source_buffer), amount_read);
 		
-		printf("%s %llu\n", "amount_left", amount_left);
-
 		amount_left -= amount_read;
-		
-		float current_percentile;
 
-		printf("%s %d\n", "amount_read", amount_read);
-		current_percentile = (float)(source_size - amount_left) / source_size;
-		printf("%s %f\n", "current_percentile", current_percentile);
-		diff_percentile += current_percentile - previous_percentile;
-		printf("%s %f\n", "diff_percentile", diff_percentile);
+		current_bar_percentile += ((float)amount_read / source_size) * NUM_PROGRESS_BARS;
 		
-		bool flag = false;
-		while ((diff_percentile + EPSILON) > increment)
+		int num_bars = (int)floor(current_bar_percentile+EPSILON);
+
+		int i;
+		for (i=0; i<num_bars; i++)
 		{
 			printf("-");
-			diff_percentile -= increment;
-			flag = true;
 		}
 
-		if (flag) 
-		{
-			previous_percentile = current_percentile;
-		}
+		current_bar_percentile -= num_bars;
 
 		if ((amount_read == 0) && (amount_left != 0))
 		{
@@ -550,7 +527,7 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int))
 		}
 	}
 
-	printf("] done.\n");
+	printf("]\n");
 
 	return result;
 }
