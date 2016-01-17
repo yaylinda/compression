@@ -28,7 +28,7 @@
 			- symbol length in bits: 1 WORD
 			- symbol count: 1 DWORD
 			- dictionary
-				- newick command string lendgth:  1 DWORD
+				- newick command string length:  1 DWORD
 				- newick command string "((A, (C, D)), B)"
 			- number of remainder bits at last BYTE: 2 bits
 			- bitstream
@@ -160,12 +160,10 @@ int main(int argc, char *argv[])
 					memset(g_representation, 0, sizeof(char)*g_representation_length);
 					make_tree();
 
-					
 					//process the input file to the output file
 					g_meta.m_magic_number = MAGIC_NUMBER;
 					g_meta.m_version_number = VERSION;
 					g_meta.m_algorithm_id = ALGORITHM_HUFFMAN;
-					
 
 					//dictionary representation
 					{
@@ -184,15 +182,12 @@ int main(int argc, char *argv[])
 					int remainder_bits_position;
 					remainder_bits_position = ftell(g_output);
 
-
 					//write some dummy data to acount for what could be
 					g_meta.m_huffman.m_number_of_remainder_bits = 0;
 					fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
 
-
 					fseek(source, 0, SEEK_SET);
 					process_file(source, compress_buffer, get_file_size(source));
-
 
 					if (g_bit_index != 7)
 					{
@@ -208,7 +203,6 @@ int main(int argc, char *argv[])
 		//				printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
 						fseek(g_output, 0, SEEK_END);
 					}
-
 
 					printf("total_bits[%d]\n", total_bits);
 					fclose(source);
@@ -369,7 +363,7 @@ void write_bit(char c)
 	}
 }
 
-bool decode_symbol(char c,BYTE *decoded_symbol)
+bool decode_symbol(char c, BYTE *decoded_symbol)
 {
 	static char s_representation[100] = {0};
 	static int s_fuckers = 0;
@@ -433,16 +427,19 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	int i;
 	BYTE decoded_symbol;
 
-//	printf("decompress buffer\n");
+	printf("**********decompress buffer\n");
 
-	for (i = 0;i < process_size;i++)
+	printf("s_current_processed_total [%d]\n", s_current_processed_total);
+
+	for (i = 0; i < process_size; i++)
 	{
 		BYTE cur_byte;
 		int j;
 		s_current_processed_total++;
 
 		cur_byte = source_buffer[i];
-	//	printf("cur_byte[%d]\n", cur_byte);
+
+		// printf("cur_byte[%d][%c]\n", cur_byte, cur_byte);
 
 		//magic linda code here..
 		//..need to know if the byte we're deoding is the last byte in the file.
@@ -467,6 +464,8 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 
 			if (test == true)
 			{
+				printf("decoded symbol[%c]\n", decoded_symbol);
+				
 				fwrite(&decoded_symbol,sizeof(decoded_symbol),1,g_output);
 			}
 
@@ -474,7 +473,6 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 			{
 				if (j + g_meta.m_huffman.m_number_of_remainder_bits == 8)
 				{
-
 	//				printf("[%d][%d][%d]found our last byte and the last legitimate bit\n",j,s_current_processed_total,g_remainder_bits_position_within_source_buffer);
 					break;
 				}
@@ -482,7 +480,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		}
 	}
 
-	return -1;
+	return 0;
 }
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size)
@@ -501,12 +499,14 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD sou
 	while (amount_left > 0)
 	{
 		int amount_read;
-		int amount_processed;
+		int processed_status;
 
 		amount_read = fread(source_buffer, sizeof(source_buffer[0]), sizeof(source_buffer), (FILE*)source);
-		amount_processed = lambda(source_buffer, sizeof(source_buffer), amount_read);
-		
+		processed_status = lambda(source_buffer, sizeof(source_buffer), amount_read);
+
 		amount_left -= amount_read;
+
+		printf("amount_read[%d] amount_left[%llu]\n", amount_read, amount_left);
 
 		current_bar_percentile += ((float)amount_read / source_size) * NUM_PROGRESS_BARS;
 		
