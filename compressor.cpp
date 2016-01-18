@@ -315,11 +315,14 @@ static int depth;
 
 void find_symbol(BYTE symbol, struct node *current_node)
 {	
+//	printf("find symbol[%d][%d]\n",depth,symbol);
 	if (found == false)
 	{
 		depth++;
 	}
-	if (current_node->m_symbol_info.m_symbol.m_value == symbol)
+
+	if ((current_node->m_left == NULL && current_node->m_right == NULL) &&
+		(current_node->m_symbol_info.m_symbol.m_value == symbol))
 	{
 		found = true;
 		depth--;
@@ -403,6 +406,8 @@ bool decode_symbol(char c, BYTE *decoded_symbol)
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 {
 	int i;
+
+//	printf("compress buffer called[%d]\n",process_size);
 	for (i=0; i<process_size; i++)
 	{
 		BYTE c = source_buffer[i];
@@ -410,7 +415,7 @@ int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 		found = false;
 		depth = 0;
 		find_symbol(c, g_root);
-//		 printf("symbol[%c], representation[%s] depth[%d]\n", c, g_representation,depth);
+//		printf("symbol[%c], representation[%s] depth[%d]  found[%c]\n", c, g_representation,depth,"NY"[!!found]);
 		for (j=0; j<depth; j++)
 		{
 			write_bit(g_representation[j]);
