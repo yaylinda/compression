@@ -2,10 +2,12 @@
 #define BURROWS_WHEELER__H
 #include "common.h"
 
-bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index);
 
-bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest);
+void bwt_initialize(int symbol_size,bool encode);
+bool bwt_write_symbols(const BYTE *source,int symbol_count);
+void bwt_read_bytes(BYTE *dest,int *count,int buffer_size);
+bool bwt_flush();
 
-void print_row(const BYTE *row, int symbol_size, int symbol_count);
+
 
 #endif //BURROWS_WHEELER__H

@@ -6,22 +6,99 @@
 #include <math.h>
 #include <assert.h>
 
+
+#define SYMBOL_COUNT 20
+#define OUTPUT_WORKING_SIZE_IN_BYTES 2048
+
+
 /////////////////////////////
 // Private Structures
 
 /////////////////////////////
 // Global Variables
+static int g_input_symbols_current = 0;
+static BYTE *g_input_buffer;
+
+static int g_output_bytes_available = 0;
+static BYTE *g_output_buffer;
+
+static bool g_encoding;
+
+
 
 /////////////////////////////
 // Private Prototypes
-// void print_row(const BYTE *row, int symbol_size, int symbol_count);
+bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index);
+bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest);
+void print_row(const BYTE *row, int symbol_size, int symbol_count);
 void print_matrix(BYTE **matrix, int symbol_size, int symbol_count);
 void in_place_quicksort(BYTE **matrix, int lo, int hi, int symbol_size, int symbol_count);
 int partition(BYTE **matrix, int lo, int hi, int symbol_size, int symbol_count);
 int row_compare(const BYTE *row1, const BYTE *row2, int symbol_size, int symbol_count);
 
+
+
 /////////////////////////////
 // Public Functions
+void bwt_initialize(int symbol_size,bool encode)
+{
+	g_encoding = encode;
+	g_input_buffer = (BYTE *)malloc(symbol_size*SYMBOL_COUNT);
+	g_output_buffer = (BYTE *)malloc(OUTPUT_WORKING_SIZE_IN_BYTES);
+}
+
+
+bool bwt_write_symbols(const BYTE *source,int symbol_count)
+{
+	bool result;
+	int symbols_left;
+
+	result = true;
+
+	symbols_left = SYMBOL_COUNT - g_input_symbols_current;
+
+	memcpy(&(g_input_buffer[g_input_symbols_current]),source,symbol_size*symbols_left);
+
+	if (symbols_left == 0)
+	{
+		bwt_flush();
+
+		if (g_input_symbols_current == SYMBOL_COUNT)
+		{
+			result = false;
+		}
+	}
+
+
+	return result;
+}
+
+void bwt_read_bytes(BYTE *dest,int *count,int buffer_size)
+{
+	*count = g_output_bytes_available;
+	if (*count > buffer_size)
+	{
+		*count = buffer_size;
+
+	}
+
+	memcpy(dest,g_output_buffer,*count);
+
+	memmov(g_output_buffer,&(g_output_buffer[*count]),OUTPUT_WORKING_SIZE_IN_BYTES - g_output_bytes_available);
+	g_output_bytes_available -= *count;
+}
+
+bool bwt_flush()
+{
+
+
+}
+
+
+/////////////////////////////
+// Private Functions
+
+
 bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index)
 {
 	// printf("entered bwt encode[%p][%d][%d][%p][%p]\n", source, symbol_size, symbol_count, dest, index);
@@ -154,8 +231,6 @@ bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index
 
 }
 
-/////////////////////////////
-// Private Functions
 void print_row(const BYTE *row, int symbol_size, int symbol_count)
 {
 	int j;
