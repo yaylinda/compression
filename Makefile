@@ -19,3 +19,4 @@ clean:
 
 run:
 	./$(EXECUTABLE) c compressor dest
+	./$(EXECUTABLE) d dest dest2

@@ -90,7 +90,8 @@ bool open_file(const char* filename, FILE **fp, bool is_source);
 int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size);
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
 int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
-int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int bwt_encode_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int bwt_decode_buffer(const BYTE *source_buffer, int max_size, int process_size);
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size);
 
@@ -178,7 +179,19 @@ int main(int argc, char *argv[])
 					fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
 
 					fseek(source, 0, SEEK_SET);
-					process_file(source, compress_buffer, get_file_size(source));
+
+
+//					process_file(source, compress_buffer, get_file_size(source));
+
+					bwt_initialize(1,true);
+					process_file(source, bwt_encode_buffer, get_file_size(source));
+					bwt_finish();
+					{
+						BYTE last_bytes[2048];
+						int bytes_read;
+						bwt_encoding_read_bytes(last_bytes,&bytes_read,sizeof(last_bytes));
+						fwrite(last_bytes,1,bytes_read,g_output);
+					}
 
 					if (g_bit_index != 7)
 					{
@@ -231,7 +244,18 @@ int main(int argc, char *argv[])
 				g_remainder_bits_position_within_source_buffer = ftell(source) - cur;
 				fseek(source,cur,SEEK_SET);
 
-				process_file(source, decompress_buffer, get_file_size(source)-cur);
+					bwt_initialize(1,false);
+					process_file(source, bwt_decode_buffer, get_file_size(source));
+					bwt_finish();
+					{
+						BYTE last_bytes[2048];
+						int bytes_read;
+						bwt_decoding_read_symbols(last_bytes,&bytes_read,sizeof(last_bytes));
+						fwrite(last_bytes,1,bytes_read,g_output);
+					}
+
+
+//				process_file(source, decompress_buffer, get_file_size(source)-cur);
 
 				fclose(source);
 				fclose(g_output);		
@@ -484,33 +508,65 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	return 0;
 }
 
-int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size)
+
+int bwt_encode_buffer(const BYTE *source_buffer, int max_size, int process_size)
 {
-	BYTE *dest;
-	int index;
+	int symbols_written;
+	int bytes_read;
+	int symbols_pos;
 
-//	printf("in bwt buffer\n");
+	symbols_pos = 0;
 
-	dest = (BYTE *)malloc(sizeof(BYTE) * process_size);
-
-	bwt_encode(source_buffer, sizeof(BYTE), process_size, dest, &index);
-	BYTE *decoded;
-
-	decoded = (BYTE *)malloc(sizeof(BYTE) * process_size);
-	bwt_decode(dest, sizeof(BYTE), process_size, index, decoded);
-	int a = memcmp(source_buffer, decoded, sizeof(BYTE) * process_size);
-	// assert(a == 0);
-
-	if (a != 0)
+	do
 	{
-		printf("process_size[%d]\n", process_size);
-		printf("source buffer: ");
-		print_row(source_buffer, sizeof(BYTE), process_size);
-		printf("decoded buffer: ");
-		print_row(decoded, sizeof(BYTE), process_size);
+		BYTE read_buffer[2048];
+
+		bwt_encoding_write_symbols(&(source_buffer[symbols_pos]),process_size,&symbols_written);
+		symbols_pos += symbols_written;
+		process_size -= symbols_written;
+
+		bwt_encoding_read_bytes(read_buffer,&bytes_read,sizeof(read_buffer));
+
+		fwrite(read_buffer,sizeof(BYTE),bytes_read,g_output);
 	}
-	return 1;
+	while (symbols_written > 0 || bytes_read > 0);
+
+	return 0;
 }
+
+
+int bwt_decode_buffer(const BYTE *source_buffer, int max_size, int process_size)
+{
+	int bytes_written;
+	int symbols_read;
+	int bytes_pos;
+
+	bytes_pos = 0;
+
+//	printf("enter decode\n");
+	do
+	{
+		BYTE read_buffer[2048];
+
+
+		bwt_decoding_write_bytes(&(source_buffer[bytes_pos]),process_size,&bytes_written);
+		bytes_pos += bytes_written;
+		process_size -= bytes_written;
+
+		bwt_decoding_read_symbols(read_buffer,&symbols_read,sizeof(read_buffer));
+
+		fwrite(read_buffer,sizeof(BYTE),symbols_read,g_output);
+	//	printf("\t[%d][%d]\n",bytes_written,symbols_read);
+
+	}
+	while (bytes_written > 0 || symbols_read > 0);
+
+//	printf("leave decode\n");
+
+	return 0;
+}
+
+
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size)
 {
