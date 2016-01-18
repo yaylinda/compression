@@ -1,19 +1,14 @@
+#include "./common.h"
+#include "./burrows_wheeler.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <assert.h>
 
-#define MAGIC_NUMBER 0xC0EDBABE
-#define VERSION 1
-#define ALGORITHM_HUFFMAN 1
 
-#define DWORD unsigned long long
-#define WORD unsigned int
-#define EPSILON 0.0001f
 #define NUM_PROGRESS_BARS 20
-#define BYTE unsigned char
-
 #define NEWICK_RECURSE_LEFT 97
 #define NEWICK_RECURSE_RIGHT 98
 #define NEWICK_POP 99
@@ -40,17 +35,6 @@
 
 /////////////////////////////
 // Private Structures
-struct symbol
-{
-	BYTE m_value;
-};
-
-struct symbol_info
-{
-	int m_count;
-	struct symbol m_symbol;
-};
-
 struct node
 {
 	struct node *m_left; // 1
@@ -106,6 +90,7 @@ bool open_file(const char* filename, FILE **fp, bool is_source);
 int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size);
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
 int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size);
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size);
 
@@ -120,6 +105,9 @@ void read_newick(FILE *fp,struct newick_structure *newick);
 
 void newick_from_tree(struct node *head, struct newick_structure *newick);
 struct node *tree_from_newick(struct newick_structure *newick);
+
+bool decode_symbol(char c, BYTE *decoded_symbol);
+void find_symbol(BYTE symbol, struct node *current_node);
 
 /////////////////////////////
 // Public Functions
@@ -151,6 +139,9 @@ int main(int argc, char *argv[])
 
 				fseek(source, 0, SEEK_SET);
 				process_file_test = process_file(source, update_frequency_table, get_file_size(source));
+
+				// testing bwt
+				//rocess_file_test = process_file(source, bwt_buffer, get_file_size(source));
 
 				if (process_file_test)
 				{
@@ -406,6 +397,11 @@ bool decode_symbol(char c, BYTE *decoded_symbol)
 int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 {
 	int i;
+	BYTE *bwt_temp;
+	int index;
+
+//	bwt_temp = (BYTE *)malloc(sizeof(BYTE) * process_size);
+//	bwt_encode(source_buffer, sizeof(BYTE), process_size, bwt_temp, &index);
 
 //	printf("compress buffer called[%d]\n",process_size);
 	for (i=0; i<process_size; i++)
@@ -432,9 +428,9 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	int i;
 	BYTE decoded_symbol;
 
-	printf("**********decompress buffer\n");
+//	printf("**********decompress buffer\n");
 
-	printf("s_current_processed_total [%d]\n", s_current_processed_total);
+//	printf("s_current_processed_total [%d]\n", s_current_processed_total);
 
 	for (i = 0; i < process_size; i++)
 	{
@@ -469,7 +465,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 
 			if (test == true)
 			{
-				printf("decoded symbol[%c]\n", decoded_symbol);
+//				printf("decoded symbol[%c]\n", decoded_symbol);
 				
 				fwrite(&decoded_symbol,sizeof(decoded_symbol),1,g_output);
 			}
@@ -488,10 +484,38 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	return 0;
 }
 
+int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size)
+{
+	BYTE *dest;
+	int index;
+
+//	printf("in bwt buffer\n");
+
+	dest = (BYTE *)malloc(sizeof(BYTE) * process_size);
+
+	bwt_encode(source_buffer, sizeof(BYTE), process_size, dest, &index);
+	BYTE *decoded;
+
+	decoded = (BYTE *)malloc(sizeof(BYTE) * process_size);
+	bwt_decode(dest, sizeof(BYTE), process_size, index, decoded);
+	int a = memcmp(source_buffer, decoded, sizeof(BYTE) * process_size);
+	// assert(a == 0);
+
+	if (a != 0)
+	{
+		printf("process_size[%d]\n", process_size);
+		printf("source buffer: ");
+		print_row(source_buffer, sizeof(BYTE), process_size);
+		printf("decoded buffer: ");
+		print_row(decoded, sizeof(BYTE), process_size);
+	}
+	return 1;
+}
+
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size)
 {
 	bool result;
-	BYTE source_buffer[2048];
+	BYTE source_buffer[64];
 	DWORD amount_left;
 	float current_bar_percentile;
 
@@ -511,7 +535,7 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD sou
 
 		amount_left -= amount_read;
 
-		printf("amount_read[%d] amount_left[%llu]\n", amount_read, amount_left);
+		// printf("amount_read[%d] amount_left[%llu]\n", amount_read, amount_left);
 
 		current_bar_percentile += ((float)amount_read / source_size) * NUM_PROGRESS_BARS;
 		
