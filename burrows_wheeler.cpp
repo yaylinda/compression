@@ -7,8 +7,9 @@
 #include <assert.h>
 
 
-#define SYMBOL_COUNT 20
-#define OUTPUT_WORKING_SIZE_IN_BYTES 2048
+#define SYMBOL_BATCH_COUNT 10
+#define WORKING_SIZE_IN_BYTES 512
+#define MAX_SYMBOL_COUNT 512
 
 
 /////////////////////////////
@@ -16,20 +17,31 @@
 
 /////////////////////////////
 // Global Variables
-static int g_input_symbols_current = 0;
-static BYTE *g_input_buffer;
+static int g_encoding_input_symbols_current;
+static BYTE *g_encoding_input_symbols_buffer;
 
-static int g_output_bytes_available = 0;
-static BYTE *g_output_buffer;
+static int g_encoding_output_bytes_current;
+static BYTE *g_encoding_output_bytes_buffer;
+
+static int g_decoding_input_bytes_current;
+static BYTE *g_decoding_input_bytes_buffer;
+
+static int g_decoding_output_symbols_current;
+static BYTE *g_decoding_output_symbols_buffer;
+
 
 static bool g_encoding;
+
+static int g_symbol_size;
 
 
 
 /////////////////////////////
 // Private Prototypes
-bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index);
-bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest);
+bool bwt_flush_batchs(bool require_batch_count);
+bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index,int *bytes_written);
+bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest,int *symbols_written);
+
 void print_row(const BYTE *row, int symbol_size, int symbol_count);
 void print_matrix(BYTE **matrix, int symbol_size, int symbol_count);
 void in_place_quicksort(BYTE **matrix, int lo, int hi, int symbol_size, int symbol_count);
@@ -42,64 +54,274 @@ int row_compare(const BYTE *row1, const BYTE *row2, int symbol_size, int symbol_
 // Public Functions
 void bwt_initialize(int symbol_size,bool encode)
 {
+	g_symbol_size = symbol_size;
 	g_encoding = encode;
-	g_input_buffer = (BYTE *)malloc(symbol_size*SYMBOL_COUNT);
-	g_output_buffer = (BYTE *)malloc(OUTPUT_WORKING_SIZE_IN_BYTES);
+	g_encoding_input_symbols_buffer = (BYTE *)malloc(MAX_SYMBOL_COUNT * g_symbol_size);
+	g_encoding_output_bytes_buffer = (BYTE *)malloc(WORKING_SIZE_IN_BYTES);
+
+	g_decoding_input_bytes_buffer = (BYTE *)malloc(WORKING_SIZE_IN_BYTES);
+	g_decoding_output_symbols_buffer = (BYTE *)malloc(MAX_SYMBOL_COUNT * g_symbol_size);
+
+
+	g_encoding_input_symbols_current = 0;
+	g_encoding_output_bytes_current = 0;
+
+	g_decoding_input_bytes_current = 0;
+	g_decoding_output_symbols_current = 0;
+
 }
 
 
-bool bwt_write_symbols(const BYTE *source,int symbol_count)
+void bwt_encoding_write_symbols(const BYTE *source,int symbol_count,int *symbols_written)
 {
-	bool result;
-	int symbols_left;
+//	printf("bwt encoding symbols[%d][%d]\n",g_encoding_input_symbols_current,symbol_count);
+	*symbols_written = symbol_count;
+	if (MAX_SYMBOL_COUNT - g_encoding_input_symbols_current < symbol_count)
+	{
+		*symbols_written = MAX_SYMBOL_COUNT - g_encoding_input_symbols_current;
+	}
 
-	result = true;
-
-	symbols_left = SYMBOL_COUNT - g_input_symbols_current;
-
-	memcpy(&(g_input_buffer[g_input_symbols_current]),source,symbol_size*symbols_left);
-
-	if (symbols_left == 0)
+	if (*symbols_written < symbol_count)
 	{
 		bwt_flush();
 
-		if (g_input_symbols_current == SYMBOL_COUNT)
+		if (MAX_SYMBOL_COUNT - g_encoding_input_symbols_current < symbol_count)
 		{
-			result = false;
+			*symbols_written = MAX_SYMBOL_COUNT - g_encoding_input_symbols_current;
+		}
+
+	}
+
+	memcpy(&(g_encoding_input_symbols_buffer[g_encoding_input_symbols_current]),source,g_symbol_size*(*symbols_written));
+	g_encoding_input_symbols_current += *symbols_written;
+}
+
+
+
+
+void bwt_encoding_read_bytes(BYTE *dest,int *byte_count,int buffer_size)
+{
+	*byte_count = g_encoding_output_bytes_current;
+	if (*byte_count > buffer_size)
+	{
+		*byte_count = buffer_size;
+
+	}
+
+	memcpy(dest,g_encoding_output_bytes_buffer,*byte_count);
+
+	memmove(g_encoding_output_bytes_buffer,&(g_encoding_output_bytes_buffer[*byte_count]),WORKING_SIZE_IN_BYTES - (*byte_count));
+	g_encoding_output_bytes_current -= *byte_count;
+//	printf("bwt encoding bytes[%d] [%d]\n",g_encoding_input_symbols_current,*byte_count);
+}
+
+
+void bwt_decoding_write_bytes(const BYTE *source,int byte_count,int *bytes_written)
+{
+	*bytes_written = byte_count;
+
+	if (WORKING_SIZE_IN_BYTES - g_decoding_input_bytes_current < byte_count)
+	{
+		*bytes_written = WORKING_SIZE_IN_BYTES - g_decoding_input_bytes_current;
+	}
+
+	if (*bytes_written < byte_count)
+	{
+		bwt_flush();
+
+		if (WORKING_SIZE_IN_BYTES - g_decoding_input_bytes_current < byte_count)
+		{
+			*bytes_written = WORKING_SIZE_IN_BYTES - g_decoding_input_bytes_current;
 		}
 	}
 
-
-	return result;
+	memcpy(&(g_decoding_input_bytes_buffer[g_decoding_input_bytes_current]),source,*bytes_written);
+	g_decoding_input_bytes_current += *bytes_written;
 }
 
-void bwt_read_bytes(BYTE *dest,int *count,int buffer_size)
-{
-	*count = g_output_bytes_available;
-	if (*count > buffer_size)
-	{
-		*count = buffer_size;
 
+void bwt_decoding_read_symbols(BYTE *dest,int *symbol_count,int max_symbols)
+{
+	*symbol_count = g_decoding_output_symbols_current;
+	if (*symbol_count > max_symbols)
+	{
+		*symbol_count = max_symbols;
 	}
 
-	memcpy(dest,g_output_buffer,*count);
+	memcpy(dest,g_decoding_output_symbols_buffer,*symbol_count * g_symbol_size);
 
-	memmov(g_output_buffer,&(g_output_buffer[*count]),OUTPUT_WORKING_SIZE_IN_BYTES - g_output_bytes_available);
-	g_output_bytes_available -= *count;
+	memmove(g_decoding_output_symbols_buffer,&(g_decoding_output_symbols_buffer[*symbol_count * g_symbol_size]),(MAX_SYMBOL_COUNT - *symbol_count) * g_symbol_size);
+	g_decoding_output_symbols_current -= *symbol_count;
 }
+
+
+bool bwt_finish()
+{
+	return bwt_flush_batchs(false);
+}
+
 
 bool bwt_flush()
 {
-
-
+	return bwt_flush_batchs(true);
 }
+
+
 
 
 /////////////////////////////
 // Private Functions
+bool bwt_flush_batchs(bool require_batch_count)
+{
+	bool result;
+
+//	printf("FLUSHING BATCHES[%d][%d][%c]\n",g_encoding_input_symbols_current,SYMBOL_BATCH_COUNT,"NY"[!!require_batch_count]);
+
+	result = false;
+
+	if (g_encoding)
+	{
+		while (g_encoding_input_symbols_current >= SYMBOL_BATCH_COUNT)
+		{
+			BYTE working_buffer[WORKING_SIZE_IN_BYTES];
+			int index;
+			int bytes_written;
+
+			bwt_encode(g_encoding_input_symbols_buffer,g_symbol_size,SYMBOL_BATCH_COUNT,working_buffer,&index,&bytes_written);
+
+			if (bytes_written + 1 < (WORKING_SIZE_IN_BYTES - g_encoding_output_bytes_current))
+			{
+				assert(index < SYMBOL_BATCH_COUNT);
+				assert(index >= 0);
+
+				g_encoding_output_bytes_buffer[g_encoding_output_bytes_current] = (BYTE)index;
+				g_encoding_output_bytes_current++;
+
+				memcpy(&(g_encoding_output_bytes_buffer[g_encoding_output_bytes_current]),working_buffer,bytes_written);
+				g_encoding_output_bytes_current += bytes_written;
+
+				memmove(g_encoding_input_symbols_buffer,&(g_encoding_input_symbols_buffer[g_symbol_size*SYMBOL_BATCH_COUNT]),(MAX_SYMBOL_COUNT - SYMBOL_BATCH_COUNT)*g_symbol_size);
+				g_encoding_input_symbols_current -= SYMBOL_BATCH_COUNT;
+	//			printf("wrote[%d][%d][%d][%d]\n",index,bytes_written,g_encoding_output_bytes_current,g_encoding_input_symbols_current);
+
+				result = true; //made meaningful progress
+			}
+			else
+			{
+				//wasn't able to make progress, not enough output byte space remaining
+				break;
+			}
+		}
+
+		if (require_batch_count == false)
+		{
+			if (g_encoding_input_symbols_current > 0)
+			{
+				BYTE working_buffer[WORKING_SIZE_IN_BYTES];
+				int index;
+				int bytes_written;
+				int symbol_count = g_encoding_input_symbols_current;
+
+				bwt_encode(g_encoding_input_symbols_buffer,g_symbol_size,symbol_count,working_buffer,&index,&bytes_written);				
+
+				if (bytes_written + 1 < (WORKING_SIZE_IN_BYTES - g_encoding_output_bytes_current))
+				{
+					assert(index < SYMBOL_BATCH_COUNT);
+					assert(index >= 0);
+
+					g_encoding_output_bytes_buffer[g_encoding_output_bytes_current] = (BYTE)index;
+					g_encoding_output_bytes_current++;
+
+					memcpy(&(g_encoding_output_bytes_buffer[g_encoding_output_bytes_current]),working_buffer,bytes_written+1);
+					g_encoding_output_bytes_current += bytes_written;
+
+					memmove(g_encoding_input_symbols_buffer,&(g_encoding_input_symbols_buffer[g_symbol_size*symbol_count]),symbol_count*g_symbol_size);
+					g_encoding_input_symbols_current -= symbol_count;
+					result = true; //made meaningful progress
+//					printf("wrote remainder[%d][%d][%d][%d]\n",index,bytes_written+1,g_encoding_output_bytes_current,symbol_count);
+
+				}
+
+			}
+		}
+	}
+	else
+	{
+		int decode_batch_size;
+		static BYTE *working_buffer = (BYTE *)malloc(g_symbol_size * SYMBOL_BATCH_COUNT);
+
+		decode_batch_size = (g_symbol_size * SYMBOL_BATCH_COUNT) + 1;
+
+		while (g_decoding_input_bytes_current >= decode_batch_size)
+		{
+			int index;
+			int symbols_written;
+
+			index = g_decoding_input_bytes_buffer[0];
+			assert(index < SYMBOL_BATCH_COUNT);
+			assert(index >= 0);
+
+			bwt_decode(g_decoding_input_bytes_buffer + 1,g_symbol_size,SYMBOL_BATCH_COUNT,index,working_buffer,&symbols_written);
+
+			if (symbols_written < (MAX_SYMBOL_COUNT - g_decoding_output_symbols_current))
+			{
+				memcpy(&(g_decoding_output_symbols_buffer[g_decoding_output_symbols_current]),working_buffer,g_symbol_size*symbols_written);
+				g_decoding_output_symbols_current += symbols_written;
+
+				memmove(g_decoding_input_bytes_buffer,&(g_decoding_input_bytes_buffer[decode_batch_size]),WORKING_SIZE_IN_BYTES - decode_batch_size);
+				g_decoding_input_bytes_current -= decode_batch_size;
+
+//				printf("decoded[%d][%d]\n",index,symbols_written);
+
+				result = true; //made meaningful progress
+			}
+			else
+			{
+				break; // wasn't able to make progress because there's not enough room to store the new batch of symbols
+			}
+		}
+
+		if (require_batch_count == false)
+		{
+			int index;
+			int symbols_written;
+
+			index = g_decoding_input_bytes_buffer[0];
+//			printf("decode remainder[%d][%d]\n",index,g_decoding_input_bytes_current);
+			decode_batch_size = g_decoding_input_bytes_current;
+
+			bwt_decode(g_decoding_input_bytes_buffer + 1,g_symbol_size,g_decoding_input_bytes_current-1,index,working_buffer,&symbols_written);
+
+			if (symbols_written < (MAX_SYMBOL_COUNT - g_decoding_output_symbols_current))
+			{
+				memcpy(&(g_decoding_output_symbols_buffer[g_decoding_output_symbols_current]),working_buffer,g_symbol_size*symbols_written);
+				g_decoding_output_symbols_current += symbols_written;
+
+				memmove(g_decoding_input_bytes_buffer,&(g_decoding_input_bytes_buffer[decode_batch_size]),decode_batch_size);
+				g_decoding_input_bytes_current -= decode_batch_size;
+
+//				printf("decoded remainder[%d][%d][%d]\n",index,symbols_written,g_decoding_input_bytes_current);
+				assert(g_decoding_input_bytes_current == 0); //this should have consumed our current input bytes
+
+				result = true; //made meaningful progress
+			}
+			else
+			{
+				assert(false);
+			}
+
+		}
+	}
+
+//	printf("LEAVING FLUSHING BATCHES[%c]\n","NY"[!!result]);
+
+	return result;
+
+}
 
 
-bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index)
+
+bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *dest, int *index,int *bytes_written)
 {
 	// printf("entered bwt encode[%p][%d][%d][%p][%p]\n", source, symbol_size, symbol_count, dest, index);
 	
@@ -110,7 +332,7 @@ bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *des
 	result = true;
 
 	// error checking
-	if (source == NULL || symbol_size <= 0 || symbol_count <= 0 || dest == NULL || index == NULL)
+	if (source == NULL || symbol_size <= 0 || symbol_count <= 0 || dest == NULL || index == NULL || bytes_written == NULL)
 	{
 		result = false;
 	}
@@ -143,7 +365,7 @@ bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *des
 		// sort matrix
 		in_place_quicksort(matrix, 0, symbol_count-1, symbol_size, symbol_count);
 		// printf("\n");
-		// print_matrix(matrix, symbol_size, symbol_count);
+		 //print_matrix(matrix, symbol_size, symbol_count);
 		
 		// find index
 		for (i=0; i<symbol_count; i++)
@@ -162,9 +384,11 @@ bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *des
 		for(i=0; i<symbol_count; i++)
 		{
 			// printf("[%p][%p]\n", &((*dest)[i*symbol_size]), (matrix[i][symbol_size*(symbol_count-1)]));
-			memcpy(&(dest[i*symbol_size]), &(matrix[i][symbol_size*(symbol_count-1)]), symbol_size);
+			memmove(&(dest[i*symbol_size]), &(matrix[i][symbol_size*(symbol_count-1)]), symbol_size);
 		}
 		// print_row(dest, symbol_size, symbol_count);
+
+		*bytes_written = symbol_size * symbol_count;
 
 		// free matrix memory
 		for(i=0; i<symbol_count; i++)
@@ -178,12 +402,13 @@ bool bwt_encode(const BYTE *source, int symbol_size, int symbol_count, BYTE *des
 	return result;
 }
 
-bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest)
+bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index, BYTE *dest,int *symbols_written)
 {
 	BYTE **matrix;
 	int i;
 	int j;
 
+//	printf("entering bwt_decode[%d][%d]\n",symbol_size,symbol_count);
 	// initialize matrix
 	matrix = (BYTE**)malloc(symbol_count*sizeof(BYTE*));
 
@@ -192,11 +417,12 @@ bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index
 		matrix[i] = (BYTE*)malloc(symbol_size*symbol_count);
 	}
 
-	// print_row(source, symbol_size, symbol_count);
+//	 print_row(source, symbol_size, symbol_count);
 
 	// printf("\n" );
 
 	// do decode algorithm
+//	printf("building matrix\n");
 	for(i=0; i<symbol_count; i++)
 	{
 		for(j=0; j<symbol_count; j++)
@@ -213,10 +439,12 @@ bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index
 
 		// print_matrix(matrix, symbol_size, symbol_count);
 	}
+//	printf("\tbuilt matrix\n");
 
-	// print_matrix(matrix, symbol_size, symbol_count);
+//	 print_matrix(matrix, symbol_size, symbol_count);
 
 	memcpy(dest, matrix[index], symbol_size*symbol_count);
+	*symbols_written = symbol_count;
 
 	// free matrix memory
 	for(i=0; i<symbol_count; i++)
@@ -226,6 +454,8 @@ bool bwt_decode(const BYTE *source, int symbol_size, int symbol_count, int index
 	free(matrix);
 
 	// print_row(dest, symbol_size, symbol_count);
+
+//	printf("leaving bwt_decode\n");
 
 	return true;
 

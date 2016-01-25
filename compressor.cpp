@@ -1,5 +1,6 @@
 #include "./common.h"
 #include "./burrows_wheeler.h"
+#include "./dictionary.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,53 +10,25 @@
 
 
 #define NUM_PROGRESS_BARS 20
-#define NEWICK_RECURSE_LEFT 97
-#define NEWICK_RECURSE_RIGHT 98
-#define NEWICK_POP 99
-#define NEWICK_SYMBOL 100
 
-/* TODO
+/*
 	- definition of compressed file format
 		- magic number: 1 DWORD
 		- version number: 1 WORD
 		- algorithm: 1 BYTE
 		- algorithm data:
 			- symbol length in bits: 1 WORD
-			- symbol count: 1 DWORD
-			- dictionary
-				- newick command string length:  1 DWORD
-				- newick command string "((A, (C, D)), B)"
-			- number of remainder bits at last BYTE: 2 bits
+			- dictionary size in bytes: 1 DWORD
+			- dictionary bytes
+			- number of remainder bits at last BYTE of the bitstream: 2 bits
 			- bitstream
 		- crc: 1 DWORD
-
-	- fix progress bar when decompressing []
-	- change 
 */
 
 /////////////////////////////
 // Private Structures
-struct node
-{
-	struct node *m_left; // 1
-	struct node *m_right; // 0
-	struct symbol_info m_symbol_info;
-};
-
-struct newick_structure
-{
-	DWORD m_num_symbols;
-	BYTE *m_symbols;
-	DWORD m_num_commands;
-	BYTE *m_commands;
-
-	int m_symbol_index;
-	int m_command_index;
-};
-
 struct huffman_format
 {
-	struct newick_structure m_newick;
 	BYTE m_number_of_remainder_bits;
 	BYTE *m_bytestream;
 };
@@ -65,19 +38,15 @@ struct compressed_file_format
 	DWORD m_magic_number;
 	WORD m_version_number;
 	BYTE m_algorithm_id;
+	DICTIONARY m_dictionary;
 	struct huffman_format m_huffman;
 	DWORD crc;
 };
 
 /////////////////////////////
 // Global Variables
-static int g_num_symbols = 0;
-static struct symbol_info *g_symbols = NULL;
-static struct node *g_root = NULL;
-static int g_representation_length = 0;
-static char *g_representation = NULL;
 static FILE *g_output = NULL;
-static int total_bits = 0;
+static int g_total_bits = 0;
 static BYTE g_bitstring = 0;
 static int g_bit_index = 7;
 static struct compressed_file_format g_meta;
@@ -87,27 +56,16 @@ static int g_remainder_bits_position_within_source_buffer = 0;
 // Private Prototypes
 bool open_file(const char* filename, FILE **fp, bool is_source);
 
-int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size);
-int compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
-int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
-int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int process_update_dictionary(const BYTE *source_buffer, int max_size, int process_size);
+int process_compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int process_decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int process_bwt_encode_buffer(const BYTE *source_buffer, int max_size, int process_size);
+int process_bwt_decode_buffer(const BYTE *source_buffer, int max_size, int process_size);
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size);
 
 DWORD get_file_size(FILE *source);
-void print_frequency_table();
-void make_tree();
 
-void initialize_newick_structure(struct newick_structure *newick);
-void print_newick_structure(struct newick_structure *newick);
-void write_newick(FILE *fp,struct newick_structure *newick);
-void read_newick(FILE *fp,struct newick_structure *newick);
-
-void newick_from_tree(struct node *head, struct newick_structure *newick);
-struct node *tree_from_newick(struct newick_structure *newick);
-
-bool decode_symbol(char c, BYTE *decoded_symbol);
-void find_symbol(BYTE symbol, struct node *current_node);
 
 /////////////////////////////
 // Public Functions
@@ -138,37 +96,34 @@ int main(int argc, char *argv[])
 				bool process_file_test;
 
 				fseek(source, 0, SEEK_SET);
-				process_file_test = process_file(source, update_frequency_table, get_file_size(source));
 
-				// testing bwt
-				//rocess_file_test = process_file(source, bwt_buffer, get_file_size(source));
+				g_meta.m_dictionary = create_dictionary();
+				process_file_test = process_file(source, process_update_dictionary, get_file_size(source));
+				finalize_dictionary(g_meta.m_dictionary);
 
 				if (process_file_test)
 				{
-				//	print_frequency_table();
-					g_representation_length = g_num_symbols;
-					g_representation = (char *) malloc(sizeof(char)*g_representation_length);
-					memset(g_representation, 0, sizeof(char)*g_representation_length);
-					make_tree();
+					print_dictionary(g_meta.m_dictionary);
 
 					//process the input file to the output file
 					g_meta.m_magic_number = MAGIC_NUMBER;
 					g_meta.m_version_number = VERSION;
 					g_meta.m_algorithm_id = ALGORITHM_HUFFMAN;
 
-					//dictionary representation
-					{
-						initialize_newick_structure(&g_meta.m_huffman.m_newick);
-
-						newick_from_tree(g_root,&g_meta.m_huffman.m_newick);
-			//			print_newick_structure(&g_meta.m_huffman.m_newick);
-					}
-
 					fwrite(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,g_output);
 					fwrite(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,g_output);
 					fwrite(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,g_output);
 
-					write_newick(g_output,&g_meta.m_huffman.m_newick);
+					{
+						int num_dictionary_bytes;
+						BYTE *dictionary_bytes;
+
+						serialize_dictionary_to_bytes(g_meta.m_dictionary,&num_dictionary_bytes,&dictionary_bytes);
+						fwrite(&num_dictionary_bytes,sizeof(num_dictionary_bytes),1,g_output);
+						fwrite(dictionary_bytes,sizeof(dictionary_bytes[0]),num_dictionary_bytes,g_output);
+
+						free(dictionary_bytes);
+					}
 
 					int remainder_bits_position;
 					remainder_bits_position = ftell(g_output);
@@ -178,7 +133,8 @@ int main(int argc, char *argv[])
 					fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
 
 					fseek(source, 0, SEEK_SET);
-					process_file(source, compress_buffer, get_file_size(source));
+
+					process_file(source, process_compress_buffer, get_file_size(source));
 
 					if (g_bit_index != 7)
 					{
@@ -195,7 +151,7 @@ int main(int argc, char *argv[])
 						fseek(g_output, 0, SEEK_END);
 					}
 
-					printf("total_bits[%d]\n", total_bits);
+					printf("total_bits[%d]\n", g_total_bits);
 					fclose(source);
 					fclose(g_output);
 					result = 0;
@@ -214,15 +170,23 @@ int main(int argc, char *argv[])
 				fread(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,source);
 				assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN);
 
-				read_newick(source,&g_meta.m_huffman.m_newick);
+				{
+					int num_dictionary_bytes;
+					BYTE *dictionary_bytes;
 
-		//		print_newick_structure(&g_meta.m_huffman.m_newick);
+					fread(&num_dictionary_bytes,sizeof(num_dictionary_bytes),1,source);
+					dictionary_bytes = (BYTE *)malloc(sizeof(BYTE) * num_dictionary_bytes);
+					fread(dictionary_bytes,sizeof(dictionary_bytes[0]),num_dictionary_bytes,source);
+
+					g_meta.m_dictionary = deserialize_bytes_to_dictionary(num_dictionary_bytes,dictionary_bytes);
+
+					free(dictionary_bytes);
+				}
+
 
 
 				fread(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(g_meta.m_huffman.m_number_of_remainder_bits), 1, source);
 	//			printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
-
-				g_root = tree_from_newick(&g_meta.m_huffman.m_newick);
 
 				
 				int cur;
@@ -231,7 +195,7 @@ int main(int argc, char *argv[])
 				g_remainder_bits_position_within_source_buffer = ftell(source) - cur;
 				fseek(source,cur,SEEK_SET);
 
-				process_file(source, decompress_buffer, get_file_size(source)-cur);
+				process_file(source, process_decompress_buffer, get_file_size(source)-cur);
 
 				fclose(source);
 				fclose(g_output);		
@@ -273,71 +237,6 @@ bool open_file(const char* filename, FILE **fp, bool is_source)
 	return result;
 }
 
-int update_frequency_table(const BYTE *source_buffer, int max_size, int process_size)
-{
-	int i;
-	for (i=0; i<process_size; i++)
-	{
-		BYTE c = source_buffer[i];
-		int j;
-		for (j=0; j<g_num_symbols; j++)
-		{
-			if (g_symbols[j].m_symbol.m_value == c) 
-			{
-				g_symbols[j].m_count++;
-				break;
-			}
-		}
-
-		if (j == g_num_symbols)
-		{
-			g_num_symbols++;
-			g_symbols = (struct symbol_info *)realloc(g_symbols, sizeof(struct symbol_info)*g_num_symbols);
-			g_symbols[g_num_symbols-1].m_count = 1;
-			g_symbols[g_num_symbols-1].m_symbol.m_value = c; 
-		}
-	}
-
-	return -1;
-}
-
-static bool found;
-static int depth;
-
-void find_symbol(BYTE symbol, struct node *current_node)
-{	
-//	printf("find symbol[%d][%d]\n",depth,symbol);
-	if (found == false)
-	{
-		depth++;
-	}
-
-	if ((current_node->m_left == NULL && current_node->m_right == NULL) &&
-		(current_node->m_symbol_info.m_symbol.m_value == symbol))
-	{
-		found = true;
-		depth--;
-		g_representation[depth] = '\0';
-	}
-	else
-	{
-		if ((found == false) && (current_node->m_left != NULL))
-		{ 
-			g_representation[depth-1] = '1';
-			find_symbol(symbol, current_node->m_left);
-		}
-
-		if ((found == false) && (current_node->m_right != NULL))
-		{ 
-			g_representation[depth-1] = '0';
-			find_symbol(symbol, current_node->m_right);
-		}
-	}
-	if (found == false)
-	{
-		depth--;
-	}
-}
 
 void write_bit(char c)
 {
@@ -357,76 +256,56 @@ void write_bit(char c)
 	}
 }
 
-bool decode_symbol(char c, BYTE *decoded_symbol)
-{
-	static char s_representation[100] = {0};
-	static int s_fuckers = 0;
-	static struct node *s_cursor = g_root;
-	bool result;
-
-	result = false;
-
-	s_representation[s_fuckers++] = c;
-
-	if (c == '1')
-	{
-		s_cursor = s_cursor->m_left;
-	}
-	else
-	{
-		if (c == '0')
-		{
-			s_cursor = s_cursor->m_right;
-		}
-	}
-
-	if (s_cursor->m_left == NULL && s_cursor->m_right == NULL)
-	{
-		s_representation[s_fuckers] = '\0';
-//		printf("rep[%s] fuck[%d]\n",s_representation,s_fuckers);
-		s_fuckers = 0;
-		s_representation[0] = '\0';
-		result = true;
-		*decoded_symbol = s_cursor->m_symbol_info.m_symbol.m_value;
-		s_cursor = g_root;
-	}
-
-	return result;
-}
-
-int compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
+int process_update_dictionary(const BYTE *source_buffer, int max_size, int process_size)
 {
 	int i;
-	BYTE *bwt_temp;
-	int index;
 
-//	bwt_temp = (BYTE *)malloc(sizeof(BYTE) * process_size);
-//	bwt_encode(source_buffer, sizeof(BYTE), process_size, bwt_temp, &index);
-
-//	printf("compress buffer called[%d]\n",process_size);
+//	printf("process_update_dictionary[%d]\n",process_size);
 	for (i=0; i<process_size; i++)
 	{
-		BYTE c = source_buffer[i];
+		struct symbol sym;
+		sym.m_value = source_buffer[i];
+
+		update_dictionary(g_meta.m_dictionary,sym);
+	}
+
+	return -1;
+}
+
+
+int process_compress_buffer(const BYTE *source_buffer, int max_size, int process_size)
+{
+	int i;
+
+
+//	printf("process_compress_buffer called[%d]\n",process_size);
+	for (i=0; i<process_size; i++)
+	{
+		struct symbol sym;
+		const char *representation;
 		int j;
-		found = false;
-		depth = 0;
-		find_symbol(c, g_root);
-//		printf("symbol[%c], representation[%s] depth[%d]  found[%c]\n", c, g_representation,depth,"NY"[!!found]);
-		for (j=0; j<depth; j++)
+
+		sym.m_value = source_buffer[i];
+		representation = encode_symbol_to_bitstring(g_meta.m_dictionary,sym);
+		assert(representation != NULL);
+//		printf("symbol[%c], representation[%s]\n", sym.m_value, representation);
+
+		while (*representation != '\0')
 		{
-			write_bit(g_representation[j]);
+			write_bit(*representation);
+			representation++;
+			g_total_bits++;
 		}
-		total_bits += depth;
 	}	
 	return -1;
 }
 
 
-int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
+int process_decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 {
 	static int s_current_processed_total = 0;
 	int i;
-	BYTE decoded_symbol;
+	struct symbol decoded_symbol;
 
 //	printf("**********decompress buffer\n");
 
@@ -461,7 +340,7 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 				bit = '0';
 			}
 
-			test = decode_symbol(bit,&decoded_symbol);
+			test = decode_consume_bit(g_meta.m_dictionary,bit,&decoded_symbol);
 
 			if (test == true)
 			{
@@ -484,33 +363,65 @@ int decompress_buffer(const BYTE *source_buffer, int max_size, int process_size)
 	return 0;
 }
 
-int bwt_buffer(const BYTE *source_buffer, int max_size, int process_size)
+
+int process_bwt_encode_buffer(const BYTE *source_buffer, int max_size, int process_size)
 {
-	BYTE *dest;
-	int index;
+	int symbols_written;
+	int bytes_read;
+	int symbols_pos;
 
-//	printf("in bwt buffer\n");
+	symbols_pos = 0;
 
-	dest = (BYTE *)malloc(sizeof(BYTE) * process_size);
-
-	bwt_encode(source_buffer, sizeof(BYTE), process_size, dest, &index);
-	BYTE *decoded;
-
-	decoded = (BYTE *)malloc(sizeof(BYTE) * process_size);
-	bwt_decode(dest, sizeof(BYTE), process_size, index, decoded);
-	int a = memcmp(source_buffer, decoded, sizeof(BYTE) * process_size);
-	// assert(a == 0);
-
-	if (a != 0)
+	do
 	{
-		printf("process_size[%d]\n", process_size);
-		printf("source buffer: ");
-		print_row(source_buffer, sizeof(BYTE), process_size);
-		printf("decoded buffer: ");
-		print_row(decoded, sizeof(BYTE), process_size);
+		BYTE read_buffer[2048];
+
+		bwt_encoding_write_symbols(&(source_buffer[symbols_pos]),process_size,&symbols_written);
+		symbols_pos += symbols_written;
+		process_size -= symbols_written;
+
+		bwt_encoding_read_bytes(read_buffer,&bytes_read,sizeof(read_buffer));
+
+		fwrite(read_buffer,sizeof(BYTE),bytes_read,g_output);
 	}
-	return 1;
+	while (symbols_written > 0 || bytes_read > 0);
+
+	return 0;
 }
+
+
+int process_bwt_decode_buffer(const BYTE *source_buffer, int max_size, int process_size)
+{
+	int bytes_written;
+	int symbols_read;
+	int bytes_pos;
+
+	bytes_pos = 0;
+
+//	printf("enter decode\n");
+	do
+	{
+		BYTE read_buffer[2048];
+
+
+		bwt_decoding_write_bytes(&(source_buffer[bytes_pos]),process_size,&bytes_written);
+		bytes_pos += bytes_written;
+		process_size -= bytes_written;
+
+		bwt_decoding_read_symbols(read_buffer,&symbols_read,sizeof(read_buffer));
+
+		fwrite(read_buffer,sizeof(BYTE),symbols_read,g_output);
+	//	printf("\t[%d][%d]\n",bytes_written,symbols_read);
+
+	}
+	while (bytes_written > 0 || symbols_read > 0);
+
+//	printf("leave decode\n");
+
+	return 0;
+}
+
+
 
 bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD source_size)
 {
@@ -561,272 +472,7 @@ bool process_file(FILE *source, int (*lambda)(const BYTE *, int, int), DWORD sou
 	return result;
 }
 
-int find_min_node(int num_nodes, struct node **nodes)
-{
-	int result = -1;
-	int smallest_value = -1;
-	int i;
-	for (i=0; i<num_nodes; i++)
-	{
-		if (nodes[i] != NULL)
-		{
-			if (nodes[i]->m_symbol_info.m_count < smallest_value || smallest_value == -1)
-			{
-				smallest_value = nodes[i]->m_symbol_info.m_count;
-				result = i;
-			}
-		}
-	}
-	return result;
-}
 
-void make_tree()
-{
-	struct node **nodes = NULL;
-
-	int num_nodes;
-	num_nodes = g_num_symbols;
-
-	nodes = (struct node **) malloc(sizeof(struct node *) * num_nodes);
-
-	int total = 0;
-
-	int i;
-	for (i=0; i<num_nodes; i++)
-	{
-		nodes[i] = (struct node *) malloc(sizeof(struct node));
-		nodes[i]->m_symbol_info = g_symbols[i];
-		nodes[i]->m_left = NULL;
-		nodes[i]->m_right = NULL;
-
-		total += nodes[i]->m_symbol_info.m_count;
-	}
-//	printf("total in make tree[%d]\n", total);
-
-	while (true)
-	{
-		int min_node_1;
-		int min_node_2;
-
-		struct node * node_1;
-		int node_1_count;
-		struct node * node_2;
-		int node_2_count;
-		struct node * additional;
-
-		node_1 = NULL;
-		node_1_count = 0;
-		node_2 = NULL;
-		node_2_count = 0;
-
-		min_node_1 = find_min_node(num_nodes, nodes);
-		if (min_node_1 != -1)
-		{
-			node_1= nodes[min_node_1];
-			nodes[min_node_1] = NULL;
-			node_1_count = node_1->m_symbol_info.m_count;
-		}
-		
-		min_node_2 = find_min_node(num_nodes, nodes);
-		if (min_node_2 != -1)
-		{
-			node_2 = nodes[min_node_2];
-			nodes[min_node_2] = NULL;
-			node_2_count = node_2->m_symbol_info.m_count;
-		}	
-
-		additional = (struct node *) malloc(sizeof(struct node));
-		additional->m_symbol_info.m_count = node_1_count + node_2_count;
-		additional->m_left = node_1;
-		additional->m_right = node_2;
-
-		if (find_min_node(num_nodes, nodes) == -1) 
-		{
-			g_root = additional;
-			break;
-		}
-
-		nodes[min_node_1] = additional;
-	}
-
-//	printf("root count[%d]\n", g_root->m_symbol_info.m_count);
-}
-
-
-
-
-void initialize_newick_structure(struct newick_structure *newick)
-{
-	newick->m_num_symbols = 0;
-	newick->m_symbols = NULL;
-	newick->m_num_commands = 0;
-	newick->m_commands = NULL;
-
-	newick->m_symbol_index = 0;
-	newick->m_command_index = 0;
-}
-
-void add_symbol_to_newick_structure(struct newick_structure *newick,BYTE addition)
-{
-	newick->m_symbols = (BYTE *)realloc(newick->m_symbols,sizeof(BYTE)*(newick->m_num_symbols+1));
-	newick->m_symbols[newick->m_num_symbols] = addition;
-	newick->m_num_symbols++;
-}
-
-void add_command_to_newick_structure(struct newick_structure *newick,BYTE addition)
-{
-	newick->m_commands = (BYTE *)realloc(newick->m_commands,sizeof(BYTE)*(newick->m_num_commands+1));
-	newick->m_commands[newick->m_num_commands] = addition;
-	newick->m_num_commands++;
-}
-
-
-void print_newick_structure(struct newick_structure *newick)
-{
-	printf("Newick Structure:\n");
-	printf("  Symbols Count[%d]  Symbols[%*s]\n",(int)newick->m_num_symbols,(int)newick->m_num_symbols,newick->m_symbols);
-	printf("  Commands Count[%d]  Commands[%*s]\n",(int)newick->m_num_commands,(int)newick->m_num_commands,newick->m_commands);
-}
-
-void write_newick(FILE *fp,struct newick_structure *newick)
-{
-	fwrite(&(newick->m_num_symbols),sizeof(newick->m_num_symbols),1,fp);
-	fwrite(newick->m_symbols,sizeof(BYTE),newick->m_num_symbols,fp);
-
-	fwrite(&(newick->m_num_commands),sizeof(newick->m_num_commands),1,fp);
-	fwrite(newick->m_commands,sizeof(BYTE),newick->m_num_commands,fp);
-}
-
-void read_newick(FILE *fp,struct newick_structure *newick)
-{
-	fread(&(newick->m_num_symbols),sizeof(newick->m_num_symbols),1,fp);
-	newick->m_symbols = (BYTE*)malloc(sizeof(BYTE)*(newick->m_num_symbols));
-	fread(newick->m_symbols,sizeof(BYTE),newick->m_num_symbols,fp);
-
-	fread(&(newick->m_num_commands),sizeof(newick->m_num_commands),1,fp);
-	newick->m_commands = (BYTE*)malloc(sizeof(BYTE)*(newick->m_num_commands));
-	fread(newick->m_commands,sizeof(BYTE),newick->m_num_commands,fp);
-}
-
-
-BYTE read_newick_command(struct newick_structure *newick)
-{
-	BYTE result;
-
-	result = newick->m_commands[newick->m_command_index];
-	newick->m_command_index++;
-
-	return result;
-}
-
-BYTE read_newick_symbol(struct newick_structure *newick)
-{
-	BYTE result;
-
-	result = newick->m_symbols[newick->m_symbol_index];
-	newick->m_symbol_index++;
-
-	return result;
-}
-
-
-void newick_from_tree(struct node *head, struct newick_structure *newick)
-{
-	if (head != NULL)
-	{
-		if (head->m_left == NULL && head->m_right == NULL)
-		{
-			add_command_to_newick_structure(newick,NEWICK_SYMBOL);
-			add_symbol_to_newick_structure(newick,head->m_symbol_info.m_symbol.m_value);
-		}
-		else
-		{
-			add_command_to_newick_structure(newick,NEWICK_RECURSE_LEFT);
-			newick_from_tree(head->m_left, newick);
-			add_command_to_newick_structure(newick,NEWICK_RECURSE_RIGHT);
-			newick_from_tree(head->m_right, newick);
-			add_command_to_newick_structure(newick,NEWICK_POP);
-		}
-	}
-}
-
-struct node *make_node()
-{
-	struct node *result;
-
-	result = (struct node *)malloc(sizeof(struct node));
-	result->m_left = NULL;
-	result->m_right = NULL;
-	result->m_symbol_info.m_count = -1;
-	result->m_symbol_info.m_symbol.m_value = 255;
-
-	return result;
-}
-
-bool is_symbol(char test)
-{
-	bool result;
-
-
-	result = true;
-
-	if (test == '(' || test == ',' || test == ')' || test == '\0')
-	{
-		result = false;
-	}
-
-	return result;
-}
-
-//(((f,(i,b)),((c,s),d)),a)
-struct node *tree_from_newick(struct newick_structure *newick)
-{
-	struct node *result;
-	static BYTE s_command;
-
-	// printf("\n");
-
-	result = NULL;
-	result = make_node();
-
-
-	s_command = read_newick_command(newick);
-	// printf("command: %c\n",s_command);
-
- 
-	if (s_command == NEWICK_RECURSE_LEFT)
-	{
-		// printf("LEFT\n");
-		result->m_left = tree_from_newick(newick);
-	}
-
-	if (s_command == NEWICK_SYMBOL)
-	{
-		BYTE symbol;
-
-		symbol = read_newick_symbol(newick);
-		// printf("FOUND VALUE[%c]\n",symbol);
-		result->m_symbol_info.m_symbol.m_value = symbol;
-		s_command = read_newick_command(newick);
-	}
-	else
-	{
-		if (s_command == NEWICK_RECURSE_RIGHT)
-		{
-			// printf("RIGHT\n");
-			result->m_right = tree_from_newick(newick);
-		}
-
-		if (s_command == NEWICK_POP)
-		{
-			s_command = read_newick_command(newick);
-		}
-	}
-
-	// printf("POP\n");
-
-	return result;
-}
 
 DWORD get_file_size(FILE *source)
 {
@@ -839,21 +485,6 @@ DWORD get_file_size(FILE *source)
 	fseek(source, org_pos, SEEK_SET);
 
 	return result;
-}
-
-void print_frequency_table()
-{
-	int total;
-	total = 0;
-	int i;
-	for (i=0; i<g_num_symbols; i++)
-	{
-		printf("symbol[%d], frequency[%d]\n", g_symbols[i].m_symbol.m_value, g_symbols[i].m_count);
-		total += g_symbols[i].m_count;
-	}
-
-	printf("num distinct symbols[%d]\n", g_num_symbols);
-	printf("total in print freq[%d]\n", total);
 }
 
 
