@@ -1,8 +1,8 @@
 CC=c++
 CFLAGS=-I. -c
 LDFLAGS=
-SOURCES=compressor.cpp burrows_wheeler.cpp
-OBJECTS=compressor.o burrows_wheeler.o
+SOURCES=compressor.cpp dictionary.cpp burrows_wheeler.cpp
+OBJECTS=compressor.o dictionary.o burrows_wheeler.o
 EXECUTABLE=compressor
 
 all: $(EXECUTABLE)
@@ -18,5 +18,5 @@ clean:
 	-rm $(OBJECTS)
 
 run:
-	./$(EXECUTABLE) c compressor dest
+	./$(EXECUTABLE) c test.txt dest
 	./$(EXECUTABLE) d dest dest2
