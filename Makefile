@@ -1,5 +1,5 @@
 CC=c++
-CFLAGS=-I. -c
+CFLAGS=-I. -c	
 LDFLAGS=
 SOURCES=compressor.cpp burrows_wheeler.cpp
 OBJECTS=compressor.o burrows_wheeler.o
