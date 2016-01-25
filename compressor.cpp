@@ -56,6 +56,9 @@ static int g_remainder_bits_position_within_source_buffer = 0;
 // Private Prototypes
 bool open_file(const char* filename, FILE **fp, bool is_source);
 
+void write_bits_representation(const char *representation);
+
+
 int process_update_dictionary(const BYTE *source_buffer, int max_size, int process_size);
 int process_compress_buffer(const BYTE *source_buffer, int max_size, int process_size);
 int process_decompress_buffer(const BYTE *source_buffer, int max_size, int process_size);
@@ -93,22 +96,24 @@ int main(int argc, char *argv[])
 			bool compress = (argv[1][0] == 'c' || argv[1][0] == 'C');
 			if (compress)
 			{
+				BYTE algorithm_id;
 				bool process_file_test;
 
+				algorithm_id = ALGORITHM_HUFFMAN;
 				fseek(source, 0, SEEK_SET);
 
-				g_meta.m_dictionary = create_dictionary();
+				g_meta.m_dictionary = create_dictionary(algorithm_id);
 				process_file_test = process_file(source, process_update_dictionary, get_file_size(source));
 				finalize_dictionary(g_meta.m_dictionary);
 
 				if (process_file_test)
 				{
-					print_dictionary(g_meta.m_dictionary);
+//					print_dictionary(g_meta.m_dictionary);
 
 					//process the input file to the output file
 					g_meta.m_magic_number = MAGIC_NUMBER;
 					g_meta.m_version_number = VERSION;
-					g_meta.m_algorithm_id = ALGORITHM_HUFFMAN;
+					g_meta.m_algorithm_id = algorithm_id;
 
 					fwrite(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,g_output);
 					fwrite(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,g_output);
@@ -135,6 +140,15 @@ int main(int argc, char *argv[])
 					fseek(source, 0, SEEK_SET);
 
 					process_file(source, process_compress_buffer, get_file_size(source));
+
+					// in case the compressor in question requires a final flush
+					{
+						const char *flush_representation;
+
+						flush_representation = encode_symbol_to_bitstring_flush(g_meta.m_dictionary);
+						write_bits_representation(flush_representation);
+					}
+
 
 					if (g_bit_index != 7)
 					{
@@ -163,12 +177,14 @@ int main(int argc, char *argv[])
 			}
 			else
 			{
+
 				fread(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,source);
 				assert(g_meta.m_magic_number == MAGIC_NUMBER);
 				fread(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,source);
 				assert(g_meta.m_version_number == VERSION);
 				fread(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,source);
-				assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN);
+				assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN || g_meta.m_algorithm_id == ALGORITHM_ARITHMETIC);
+
 
 				{
 					int num_dictionary_bytes;
@@ -177,6 +193,7 @@ int main(int argc, char *argv[])
 					fread(&num_dictionary_bytes,sizeof(num_dictionary_bytes),1,source);
 					dictionary_bytes = (BYTE *)malloc(sizeof(BYTE) * num_dictionary_bytes);
 					fread(dictionary_bytes,sizeof(dictionary_bytes[0]),num_dictionary_bytes,source);
+
 
 					g_meta.m_dictionary = deserialize_bytes_to_dictionary(num_dictionary_bytes,dictionary_bytes);
 
@@ -196,6 +213,21 @@ int main(int argc, char *argv[])
 				fseek(source,cur,SEEK_SET);
 
 				process_file(source, process_decompress_buffer, get_file_size(source)-cur);
+
+				//do flusing if we should need to
+				{
+					bool test;
+					struct symbol decoded_symbol;
+
+					test = decode_consume_bit_flush(g_meta.m_dictionary,&decoded_symbol);
+
+					if (test == true)
+					{
+		//				printf("decoded symbol[%c]\n", decoded_symbol);
+						
+						fwrite(&decoded_symbol,sizeof(decoded_symbol),1,g_output);
+					}
+				}
 
 				fclose(source);
 				fclose(g_output);		
@@ -256,6 +288,21 @@ void write_bit(char c)
 	}
 }
 
+void write_bits_representation(const char *representation)
+{
+	if (representation != NULL)
+	{
+//		printf("symbol[%c], representation[%s]\n", sym.m_value, representation);
+
+		while (*representation != '\0')
+		{
+			write_bit(*representation);
+			representation++;
+			g_total_bits++;
+		}
+	}
+}
+
 int process_update_dictionary(const BYTE *source_buffer, int max_size, int process_size)
 {
 	int i;
@@ -287,15 +334,7 @@ int process_compress_buffer(const BYTE *source_buffer, int max_size, int process
 
 		sym.m_value = source_buffer[i];
 		representation = encode_symbol_to_bitstring(g_meta.m_dictionary,sym);
-		assert(representation != NULL);
-//		printf("symbol[%c], representation[%s]\n", sym.m_value, representation);
-
-		while (*representation != '\0')
-		{
-			write_bit(*representation);
-			representation++;
-			g_total_bits++;
-		}
+		write_bits_representation(representation);
 	}	
 	return -1;
 }

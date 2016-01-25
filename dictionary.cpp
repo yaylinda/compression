@@ -3,6 +3,7 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <math.h>
 
 /////////////////////////////
 // private defines
@@ -14,6 +15,8 @@
 #define NEWICK_POP 99
 #define NEWICK_SYMBOL 100
 
+#define SHOULD_SCALE_HALF(high,low) (high < 0xFFFFFFFF/2 || low > 0xFFFFFFFF/2)
+#define SHOULD_SCALE_QUARTER(high,low) (low > 0xFFFFFFFF/4 && high < (3 * (0xFFFFFFFF/4)))
 
 /////////////////////////////
 // Private Structures
@@ -36,16 +39,41 @@ struct newick_structure
 };
 
 
-struct dictionary_internal
+struct huffman_structure
 {
-	int m_num_symbols;
-	struct symbol_info *m_symbols;
-
 	struct node *m_head;
 	struct node *m_decode_cursor;
 
 	bool m_found;
 	int m_depth;
+};
+
+struct arithmetic_structure
+{
+	int *m_lower_precision;
+	int *m_higher_precision;
+	int m_total_symbols;
+
+	int m_interval_low;
+	int m_interval_high;
+	int m_num_splits;
+
+	char m_bit_buffer[32];
+	int m_bit_buffer_index;
+	DWORD m_z;
+	bool m_is_z_initialized;
+};
+
+struct dictionary_internal
+{
+	int m_num_symbols;
+	struct symbol_info *m_symbols;
+
+	BYTE m_algorithm_id;
+
+	struct huffman_structure m_huffman;
+	struct arithmetic_structure m_arithmetic;
+
 	int m_representation_length;
 	char m_representation[MAX_REPRESENTATION_LENGTH]; // literally the characters '0' or '1' to represent a bit string
 };
@@ -58,6 +86,9 @@ struct dictionary_internal
 
 /////////////////////////////
 // Private Prototypes
+void rescale_half(struct dictionary_internal *dictionary, char bit_representation);
+void rescale_quarter(struct dictionary_internal *dictionary, char bit_representation);
+int find_symbol_index(struct dictionary_internal *dictionary,struct symbol sym);
 void find_symbol(struct dictionary_internal *dictionary,struct symbol sym, struct node *current_node);
 
 int find_min_node(int num_nodes, struct node **nodes);
@@ -78,17 +109,22 @@ struct node *tree_from_newick(struct newick_structure *newick);
 /////////////////////////////
 // Public Functions
 
-DICTIONARY create_dictionary()
+DICTIONARY create_dictionary(BYTE algorithm_id)
 {
 	struct dictionary_internal *addition;
 
 	addition = (struct dictionary_internal *)malloc(sizeof(struct dictionary_internal));
 
+	addition->m_algorithm_id = algorithm_id;
+
+	addition->m_arithmetic.m_lower_precision = NULL;
+	addition->m_arithmetic.m_higher_precision = NULL;
+
 	addition->m_num_symbols = 0;
 	addition->m_representation_length = 0;
 
 	addition->m_symbols = NULL;
-	addition->m_head = NULL;
+	addition->m_huffman.m_head = NULL;
 
 	return (DICTIONARY)addition;
 }
@@ -102,9 +138,23 @@ void destroy_dictonary(DICTIONARY dictionary)
 	free(alias->m_symbols);
 	alias->m_symbols = NULL;
 
-	free_tree(alias->m_head);
-	alias->m_head = NULL;
-	alias->m_decode_cursor = NULL;
+	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
+	{
+		free_tree(alias->m_huffman.m_head);
+		alias->m_huffman.m_head = NULL;
+		alias->m_huffman.m_decode_cursor = NULL;
+	}
+	else
+	{
+		if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
+		{
+			free(alias->m_arithmetic.m_lower_precision);
+			alias->m_arithmetic.m_lower_precision = NULL;
+
+			free(alias->m_arithmetic.m_higher_precision);
+			alias->m_arithmetic.m_higher_precision = NULL;
+		}
+	}
 
 	free(alias);
 }
@@ -142,49 +192,97 @@ bool finalize_dictionary(DICTIONARY dictionary)
 
 	alias = (struct dictionary_internal *)dictionary;
 
-	make_tree(alias);
+	result = false;
 
-	if (alias->m_head == NULL)
+	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
 	{
-		result = false;
+		make_tree(alias);
+
+		if (alias->m_huffman.m_head != NULL)
+		{
+			alias->m_huffman.m_decode_cursor = alias->m_huffman.m_head;
+			result = true;
+		}
 	}
 	else
 	{
-		alias->m_decode_cursor = alias->m_head;
-		result = true;
+		if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
+		{
+			alias->m_arithmetic.m_lower_precision = (int *)malloc(sizeof(int) * alias->m_num_symbols);
+			alias->m_arithmetic.m_higher_precision = (int *)malloc(sizeof(int) * alias->m_num_symbols);
+			alias->m_arithmetic.m_total_symbols = 0;
+			alias->m_arithmetic.m_interval_low = 0;
+			alias->m_arithmetic.m_interval_high = 0xFFFFFFFF;
+			alias->m_arithmetic.m_num_splits = 0;
+			alias->m_arithmetic.m_bit_buffer_index = 0;
+			alias->m_arithmetic.m_is_z_initialized = false;
+			alias->m_arithmetic.m_z = 0;
+
+			int i;
+			int previous_count = 0;
+			for(i=0; i<alias->m_num_symbols; i++)
+			{
+				alias->m_arithmetic.m_lower_precision[i] = previous_count;
+				previous_count = alias->m_symbols[i].m_count;
+			}
+			for(i=0; i<alias->m_num_symbols; i++)
+			{
+				alias->m_arithmetic.m_higher_precision[i] = alias->m_arithmetic.m_lower_precision[i] + alias->m_symbols[i].m_count;
+			}
+
+			alias->m_arithmetic.m_total_symbols = previous_count;
+		}
 	}
 
 	return result;
 }
 
 
-
-
 void serialize_dictionary_to_bytes(DICTIONARY dictionary,int *num_bytes,BYTE **bytes)
 {
 	struct dictionary_internal *alias;
+	BYTE *cursor;
 
 	alias = (struct dictionary_internal *)dictionary;
 
 	*num_bytes = sizeof(int) + (alias->m_num_symbols * sizeof(struct symbol_info));
 	*bytes = (BYTE *)malloc(sizeof(BYTE) * *num_bytes);
+	cursor = *bytes;
 
-	memcpy(*bytes,&(alias->m_num_symbols),sizeof(int));
-	memcpy(&((*bytes)[sizeof(int)]),alias->m_symbols,(alias->m_num_symbols * sizeof(struct symbol_info)));
+	memcpy(cursor,&(alias->m_algorithm_id),sizeof(alias->m_algorithm_id));
+	cursor += sizeof(alias->m_algorithm_id);
+
+	memcpy(cursor,&(alias->m_num_symbols),sizeof(int));
+	cursor += sizeof(alias->m_num_symbols);
+
+	memcpy(cursor,alias->m_symbols,(alias->m_num_symbols * sizeof(struct symbol_info)));
+	cursor += alias->m_num_symbols * sizeof(struct symbol_info);
 }
 
 
 DICTIONARY deserialize_bytes_to_dictionary(int num_bytes,BYTE *bytes)
 {
 	DICTIONARY result;
+	BYTE algorithm_id;
+	BYTE *cursor;
 	struct dictionary_internal *alias;
 
-	result = create_dictionary();
+	alias = (struct dictionary_internal *)result;
+	cursor = bytes;
+
+	memcpy(&algorithm_id,cursor,sizeof(alias->m_algorithm_id));
+	cursor += sizeof(alias->m_algorithm_id);
+
+	result = create_dictionary(algorithm_id);
 	alias = (struct dictionary_internal *)result;
 
-	memcpy(&(alias->m_num_symbols),bytes,sizeof(int));
+
+	memcpy(&(alias->m_num_symbols),cursor,sizeof(alias->m_num_symbols));
+	cursor += sizeof(alias->m_num_symbols);
+
 	alias->m_symbols = (struct symbol_info *)malloc(sizeof(struct symbol_info) * alias->m_num_symbols);
-	memcpy(alias->m_symbols,&(bytes[sizeof(int)]),sizeof(struct symbol_info) * alias->m_num_symbols);
+	memcpy(alias->m_symbols,cursor,sizeof(struct symbol_info) * alias->m_num_symbols);
+	cursor += sizeof(struct symbol_info) * alias->m_num_symbols;
 
 	bool test;
 
@@ -207,20 +305,134 @@ const char *encode_symbol_to_bitstring(DICTIONARY dictionary,struct symbol sym)
 	result = NULL;
 	alias = (struct dictionary_internal *)dictionary;
 
-	alias->m_found = false;
-	alias->m_depth = 0;
-
-	find_symbol(alias,sym,alias->m_head);
-
-	if (alias->m_found == true)
+	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
 	{
-		result = alias->m_representation;
+		alias->m_huffman.m_found = false;
+		alias->m_huffman.m_depth = 0;
+
+		find_symbol(alias,sym,alias->m_huffman.m_head);
+
+		if (alias->m_huffman.m_found == true)
+		{
+			result = alias->m_representation;
+		}
+	}
+	else
+	{
+		if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
+		{
+			static char s_working_buffer[MAX_REPRESENTATION_LENGTH];
+
+			int diff;
+			int symbol_index;
+			int write_index;
+
+			diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
+			symbol_index = find_symbol_index(alias, sym);
+			write_index = 0;
+
+			alias->m_arithmetic.m_interval_high = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_higher_precision[symbol_index])/alias->m_arithmetic.m_total_symbols);
+			alias->m_arithmetic.m_interval_low = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_lower_precision[symbol_index])/alias->m_arithmetic.m_total_symbols);
+			
+			// rescaling 1
+			while (SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
+			{
+				char first;
+				char rest;
+
+				if (alias->m_arithmetic.m_interval_high < 0xFFFFFFFF/2)
+				{
+					first = '0';
+					rest = '1';
+
+					alias->m_arithmetic.m_interval_low = alias->m_arithmetic.m_interval_low * 2;
+					alias->m_arithmetic.m_interval_high = alias->m_arithmetic.m_interval_high * 2;
+					alias->m_arithmetic.m_num_splits = 0;
+
+					result = s_working_buffer;
+				}
+				else if (alias->m_arithmetic.m_interval_low > 0xFFFFFFFF/2)
+				{
+					first = '1';
+					rest = '0';
+
+					alias->m_arithmetic.m_interval_low = 2 * (alias->m_arithmetic.m_interval_low - 0xFFFFFFFF/2);
+					alias->m_arithmetic.m_interval_high = 2 * (alias->m_arithmetic.m_interval_high - 0xFFFFFFFF/2);
+					alias->m_arithmetic.m_num_splits = 0;
+
+					result = s_working_buffer;
+				}
+				s_working_buffer[write_index] = first;
+				write_index++;
+				int j;
+				for(j=0; j<alias->m_arithmetic.m_num_splits; j++)
+				{
+					s_working_buffer[write_index] = rest;
+					write_index++;
+				}
+			}
+
+			// rescaling 2
+			while (SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
+			{
+				alias->m_arithmetic.m_interval_low = 2 * (alias->m_arithmetic.m_interval_low - 0xFFFFFFFF/4);
+				alias->m_arithmetic.m_interval_high = 2 * (alias->m_arithmetic.m_interval_high - 0xFFFFFFFF/4);
+				alias->m_arithmetic.m_num_splits++;
+			}
+		}
 	}
 
 	return result;
 }
 
+const char *encode_symbol_to_bitstring_flush(DICTIONARY dictionary)
+{
+	struct dictionary_internal *alias;
+	char *result;
 
+	alias = (struct dictionary_internal *)dictionary;
+
+	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
+	{
+		result = NULL;
+	}
+	else
+	{
+		static char s_working_buffer[MAX_REPRESENTATION_LENGTH];
+		int j;
+		int write_index = 0;
+		alias->m_arithmetic.m_num_splits++;
+
+		if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
+		{
+			char first;
+			char rest;
+
+			if (alias->m_arithmetic.m_interval_low <= 0xFFFFFFFF/4)
+			{
+				first = '0';
+				rest = '1';
+			}
+			else
+			{
+				first = '1';
+				rest = '0';	
+			}
+
+			s_working_buffer[write_index] = first;
+			write_index++;
+			for(j=0; j<alias->m_arithmetic.m_num_splits; j++)
+			{
+				s_working_buffer[write_index] = rest;
+				write_index++;
+			}
+
+			result = s_working_buffer;
+		}
+	}
+
+	return result;
+}
 
 bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct symbol *decoded_symbol)
 {
@@ -231,31 +443,148 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 
 	alias = (struct dictionary_internal *)dictionary;
 
-
-	if (bit_representation == '1')
+	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
 	{
-		alias->m_decode_cursor = alias->m_decode_cursor->m_left;
+		if (bit_representation == '1')
+		{
+			alias->m_huffman.m_decode_cursor = alias->m_huffman.m_decode_cursor->m_left;
+		}
+		else
+		{
+			if (bit_representation == '0')
+			{
+				alias->m_huffman.m_decode_cursor = alias->m_huffman.m_decode_cursor->m_right;
+			}
+		}
+
+		if (alias->m_huffman.m_decode_cursor->m_left == NULL && alias->m_huffman.m_decode_cursor->m_right == NULL)
+		{
+			result = true;
+			*decoded_symbol = alias->m_huffman.m_decode_cursor->m_symbol_info.m_symbol;
+			alias->m_huffman.m_decode_cursor = alias->m_huffman.m_head; // reset the cursor for the next round
+		}
 	}
 	else
 	{
-		if (bit_representation == '0')
+		if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
 		{
-			alias->m_decode_cursor = alias->m_decode_cursor->m_right;
+			if (alias->m_arithmetic.m_bit_buffer_index < 32)
+			{
+				alias->m_arithmetic.m_bit_buffer[alias->m_arithmetic.m_bit_buffer_index] = bit_representation;
+				alias->m_arithmetic.m_bit_buffer_index++;
+			}
+			else
+			{
+				if (alias->m_arithmetic.m_is_z_initialized == false)
+				{
+					int pos;
+
+					alias->m_arithmetic.m_z = 0;
+					for (pos = 0; pos < alias->m_arithmetic.m_bit_buffer_index; pos++)
+					{
+						if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
+						{
+							alias->m_arithmetic.m_z |= (1 << (32 - pos));
+						}
+					}
+
+					alias->m_arithmetic.m_is_z_initialized = true;
+				}
+				else
+				{
+					if (!SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low) 
+						&& !SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
+					{
+						int j;
+						// decode a symbol
+						for (j=0; j<alias->m_num_symbols; j++)
+						{
+							int diff;
+							int b0;
+							int a0;
+							diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
+
+							b0 = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_higher_precision[j])/alias->m_arithmetic.m_total_symbols);
+							a0 = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_lower_precision[j])/alias->m_arithmetic.m_total_symbols);
+
+							if (a0 <= alias->m_arithmetic.m_z && alias->m_arithmetic.m_z < b0)
+							{
+								alias->m_arithmetic.m_interval_low = a0;
+								alias->m_arithmetic.m_interval_high = b0;
+								*decoded_symbol = alias->m_symbols[j].m_symbol;
+								result = true; // symbol found!
+								break;
+							}
+						}
+					}
+					rescale_half(alias, bit_representation);
+					rescale_quarter(alias, bit_representation);
+				}
+			}
 		}
 	}
+	return result;
+}
 
-	if (alias->m_decode_cursor->m_left == NULL && alias->m_decode_cursor->m_right == NULL)
+bool decode_consume_bit_flush(DICTIONARY dictionary, struct symbol *decoded_symbol)
+{
+	struct dictionary_internal *alias;
+	bool result;
+
+	alias = (struct dictionary_internal *)dictionary;
+	result = false;
+
+	if (alias->m_algorithm_id == ALGORITHM_ARITHMETIC)
 	{
-		result = true;
-		*decoded_symbol = alias->m_decode_cursor->m_symbol_info.m_symbol;
-		alias->m_decode_cursor = alias->m_head; // reset the cursor for the next round
+
+		if (alias->m_arithmetic.m_is_z_initialized == false)
+		{
+			int pos;
+
+			alias->m_arithmetic.m_z = 0;
+			for (pos = 0; pos < alias->m_arithmetic.m_bit_buffer_index; pos++)
+			{
+				if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
+				{
+					alias->m_arithmetic.m_z |= (1 << (32 - pos));
+				}
+			}
+
+			alias->m_arithmetic.m_is_z_initialized = true;
+		}
+
+
+		if (!SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low) 
+			&& !SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
+		{
+			int j;
+			// decode a symbol
+			for (j=0; j<alias->m_num_symbols; j++)
+			{
+				int diff;
+				int b0;
+				int a0;
+				diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
+
+				b0 = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_higher_precision[j])/alias->m_arithmetic.m_total_symbols);
+				a0 = alias->m_arithmetic.m_interval_low + round((diff * alias->m_arithmetic.m_lower_precision[j])/alias->m_arithmetic.m_total_symbols);
+
+				if (a0 <= alias->m_arithmetic.m_z && alias->m_arithmetic.m_z < b0)
+				{
+					alias->m_arithmetic.m_interval_low = a0;
+					alias->m_arithmetic.m_interval_high = b0;
+					*decoded_symbol = alias->m_symbols[j].m_symbol;
+					result = true; // symbol found!
+					break;
+				}
+			}
+		}
+		// rescale_half(alias, bit_representation);
+		// rescale_quarter(alias, bit_representation);
 	}
 
 	return result;
 }
-
-
-
 
 void print_dictionary(DICTIONARY dictionary)
 {
@@ -281,41 +610,102 @@ void print_dictionary(DICTIONARY dictionary)
 /////////////////////////////
 // Private Functions
 
+void rescale_half(struct dictionary_internal *dictionary, char bit_representation)
+{
+	if (SHOULD_SCALE_HALF(dictionary->m_arithmetic.m_interval_high,dictionary->m_arithmetic.m_interval_low))
+	{
+		if (dictionary->m_arithmetic.m_interval_high < 0xFFFFFFFF/2)
+		{
+			dictionary->m_arithmetic.m_interval_low = dictionary->m_arithmetic.m_interval_low * 2;
+			dictionary->m_arithmetic.m_interval_high = dictionary->m_arithmetic.m_interval_high * 2;
+			dictionary->m_arithmetic.m_z = dictionary->m_arithmetic.m_z * 2;
+		}
+		else if (dictionary->m_arithmetic.m_interval_low > 0xFFFFFFFF/2)
+		{
+			dictionary->m_arithmetic.m_interval_low = 2 * (dictionary->m_arithmetic.m_interval_low - 0xFFFFFFFF/2);
+			dictionary->m_arithmetic.m_interval_high = 2 * (dictionary->m_arithmetic.m_interval_high - 0xFFFFFFFF/2);
+			dictionary->m_arithmetic.m_z = 2 * (dictionary->m_arithmetic.m_z - 0xFFFFFFFF/2);
+		}
+
+		if (bit_representation == '1')
+		{
+			dictionary->m_arithmetic.m_z++;
+		}
+	}
+}
+
+void rescale_quarter(struct dictionary_internal *dictionary, char bit_representation)
+{
+	if (SHOULD_SCALE_HALF(dictionary->m_arithmetic.m_interval_high,dictionary->m_arithmetic.m_interval_low) == false)
+	{
+		if (SHOULD_SCALE_QUARTER(dictionary->m_arithmetic.m_interval_high,dictionary->m_arithmetic.m_interval_low))
+		{
+			dictionary->m_arithmetic.m_interval_low = 2 * (dictionary->m_arithmetic.m_interval_low - 0xFFFFFFFF/4);
+			dictionary->m_arithmetic.m_interval_high = 2 * (dictionary->m_arithmetic.m_interval_high - 0xFFFFFFFF/4);
+			dictionary->m_arithmetic.m_z = 2 * (dictionary->m_arithmetic.m_z - 0xFFFFFFFF/4);
+
+			if (bit_representation == '1')
+			{
+				dictionary->m_arithmetic.m_z++;
+			}
+		}
+	}
+}
+
+int find_symbol_index(struct dictionary_internal *dictionary,struct symbol sym)
+{
+	int i;
+	for(i=0; i<dictionary->m_num_symbols; i++)
+	{
+		if (memcmp(&(dictionary->m_symbols[i].m_symbol), &sym, sizeof(struct symbol)) == 0)
+		{
+			break;
+		}
+	}
+
+	if (i == dictionary->m_num_symbols)
+	{
+		i = -1;
+	}
+
+	return i;
+}
+
 
 
 void find_symbol(struct dictionary_internal *dictionary,struct symbol sym, struct node *current_node)
 {	
 //	printf("find symbol[%d][%d]\n",depth,symbol);
-	if (dictionary->m_found == false)
+	if (dictionary->m_huffman.m_found == false)
 	{
-		dictionary->m_depth++;
+		dictionary->m_huffman.m_depth++;
 	}
 
 	if ((current_node->m_left == NULL && current_node->m_right == NULL) &&
 		(current_node->m_symbol_info.m_symbol.m_value == sym.m_value))
 	{
-		dictionary->m_found = true;
-		dictionary->m_depth--;
-		dictionary->m_representation[dictionary->m_depth] = '\0';
+		dictionary->m_huffman.m_found = true;
+		dictionary->m_huffman.m_depth--;
+		dictionary->m_representation[dictionary->m_huffman.m_depth] = '\0';
 	}
 	else
 	{
-		if ((dictionary->m_found == false) && (current_node->m_left != NULL))
+		if ((dictionary->m_huffman.m_found == false) && (current_node->m_left != NULL))
 		{ 
-			dictionary->m_representation[dictionary->m_depth - 1] = '1';
+			dictionary->m_representation[dictionary->m_huffman.m_depth - 1] = '1';
 			find_symbol(dictionary, sym, current_node->m_left);
 		}
 
-		if ((dictionary->m_found == false) && (current_node->m_right != NULL))
+		if ((dictionary->m_huffman.m_found == false) && (current_node->m_right != NULL))
 		{ 
-			dictionary->m_representation[dictionary->m_depth - 1] = '0';
+			dictionary->m_representation[dictionary->m_huffman.m_depth - 1] = '0';
 			find_symbol(dictionary, sym, current_node->m_right);
 		}
 	}
 
-	if (dictionary->m_found == false)
+	if (dictionary->m_huffman.m_found == false)
 	{
-		dictionary->m_depth--;
+		dictionary->m_huffman.m_depth--;
 	}
 }
 
@@ -401,7 +791,7 @@ void make_tree(struct dictionary_internal *dictionary)
 
 		if (find_min_node(num_nodes, nodes) == -1) 
 		{
-			dictionary->m_head = additional;
+			dictionary->m_huffman.m_head = additional;
 			break;
 		}
 
