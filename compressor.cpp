@@ -21,13 +21,13 @@
 			- dictionary size in bytes: 1 DWORD
 			- dictionary bytes
 			- number of remainder bits at last BYTE of the bitstream: 2 bits
-			- bitstream
+			- compressed bitstream
 		- crc: 1 DWORD
 */
 
 /////////////////////////////
 // Private Structures
-struct huffman_format
+struct compressed_stream
 {
 	BYTE m_number_of_remainder_bits;
 	BYTE *m_bytestream;
@@ -39,7 +39,7 @@ struct compressed_file_format
 	WORD m_version_number;
 	BYTE m_algorithm_id;
 	DICTIONARY m_dictionary;
-	struct huffman_format m_huffman;
+	struct compressed_stream m_compressed_stream;
 	DWORD crc;
 };
 
@@ -129,8 +129,8 @@ int main(int argc, char *argv[])
 					remainder_bits_position = ftell(g_output);
 
 					//write some dummy data to acount for what could be
-					g_meta.m_huffman.m_number_of_remainder_bits = 0;
-					fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
+					g_meta.m_compressed_stream.m_number_of_remainder_bits = 0;
+					fwrite(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
 
 					fseek(source, 0, SEEK_SET);
 
@@ -138,16 +138,16 @@ int main(int argc, char *argv[])
 
 					if (g_bit_index != 7)
 					{
-						g_meta.m_huffman.m_number_of_remainder_bits = 7 - g_bit_index;
+						g_meta.m_compressed_stream.m_number_of_remainder_bits = 7 - g_bit_index;
 
-						if (g_meta.m_huffman.m_number_of_remainder_bits > 0)
+						if (g_meta.m_compressed_stream.m_number_of_remainder_bits > 0)
 						{
 							fwrite(&g_bitstring, sizeof(BYTE), 1, g_output);
 						}
 
 						fseek(g_output, remainder_bits_position, SEEK_SET);
-						fwrite(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
-		//				printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+						fwrite(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(BYTE), 1, g_output);
+		//				printf("number of remainder bits written[%d]\n", g_meta.m_compressed_stream.m_number_of_remainder_bits);
 						fseek(g_output, 0, SEEK_END);
 					}
 
@@ -185,8 +185,8 @@ int main(int argc, char *argv[])
 
 
 
-				fread(&g_meta.m_huffman.m_number_of_remainder_bits, sizeof(g_meta.m_huffman.m_number_of_remainder_bits), 1, source);
-	//			printf("number of remainder bits written[%d]\n", g_meta.m_huffman.m_number_of_remainder_bits);
+				fread(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(g_meta.m_compressed_stream.m_number_of_remainder_bits), 1, source);
+	//			printf("number of remainder bits written[%d]\n", g_meta.m_compressed_stream.m_number_of_remainder_bits);
 
 				
 				int cur;
@@ -321,10 +321,6 @@ int process_decompress_buffer(const BYTE *source_buffer, int max_size, int proce
 
 		// printf("cur_byte[%d][%c]\n", cur_byte, cur_byte);
 
-		//magic linda code here..
-		//..need to know if the byte we're deoding is the last byte in the file.
-		//... If it IS, then we need to make sure we respect ONLY the meta.huffman.remainder_bits worth of that last byte.
-		// (the subsequent bits are garbage)
 
 		for (j = 7;j >= 0;j--)
 		{
@@ -351,7 +347,7 @@ int process_decompress_buffer(const BYTE *source_buffer, int max_size, int proce
 
 			if (s_current_processed_total == g_remainder_bits_position_within_source_buffer)
 			{
-				if (j + g_meta.m_huffman.m_number_of_remainder_bits == 8)
+				if (j + g_meta.m_compressed_stream.m_number_of_remainder_bits == 8)
 				{
 	//				printf("[%d][%d][%d]found our last byte and the last legitimate bit\n",j,s_current_processed_total,g_remainder_bits_position_within_source_buffer);
 					break;
@@ -402,7 +398,6 @@ int process_bwt_decode_buffer(const BYTE *source_buffer, int max_size, int proce
 	do
 	{
 		BYTE read_buffer[2048];
-
 
 		bwt_decoding_write_bytes(&(source_buffer[bytes_pos]),process_size,&bytes_written);
 		bytes_pos += bytes_written;

@@ -18,5 +18,5 @@ clean:
 	-rm $(OBJECTS)
 
 run:
-	./$(EXECUTABLE) c test.txt dest
+	./$(EXECUTABLE) c compressor dest
 	./$(EXECUTABLE) d dest dest2

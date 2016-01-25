@@ -1,0 +1,5 @@
+#ifndef INPUT_STREAM__HPP
+#define INPUT_STREAM__HPP
+
+
+#endif // INPUT_STREAM__HPP
