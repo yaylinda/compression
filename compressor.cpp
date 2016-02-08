@@ -161,10 +161,6 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 		g_meta.m_version_number = VERSION;
 		g_meta.m_algorithm_id = algorithm_id;
 
-//		fwrite(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1,dest);
-//		fwrite(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1,dest);
-//		fwrite(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1,dest);
-
 		dest->write(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1);
 		dest->write(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1);
 		dest->write(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1);
@@ -174,8 +170,6 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 			BYTE *dictionary_bytes;
 
 			serialize_dictionary_to_bytes(g_meta.m_dictionary,&num_dictionary_bytes,&dictionary_bytes);
-//			fwrite(&num_dictionary_bytes,sizeof(num_dictionary_bytes),1,dest);
-//			fwrite(dictionary_bytes,sizeof(dictionary_bytes[0]),num_dictionary_bytes,dest);
 			dest->write(&num_dictionary_bytes,sizeof(num_dictionary_bytes),1);
 			dest->write(dictionary_bytes,sizeof(dictionary_bytes[0]),num_dictionary_bytes);
 
@@ -183,12 +177,10 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 		}
 
 		int remainder_bits_position;
-//		remainder_bits_position = ftell(dest);
 		remainder_bits_position = dest->tell();
 
 		//write some dummy data to acount for what could be
 		g_meta.m_compressed_stream.m_number_of_remainder_bits = 0;
-//		fwrite(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(BYTE), 1, dest);
 		dest->write(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(BYTE), 1);
 
 		source->seek(0, SEEK_BEGINNING);
@@ -210,7 +202,6 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 
 			if (g_meta.m_compressed_stream.m_number_of_remainder_bits > 0)
 			{
-//				fwrite(&g_bitstring, sizeof(BYTE), 1, dest);
 				dest->write(&g_bitstring, sizeof(BYTE), 1);
 			}
 
@@ -287,8 +278,6 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 		if (test == true)
 		{
 //				printf("decoded symbol[%c]\n", decoded_symbol);
-			
-//			fwrite(&decoded_symbol,sizeof(decoded_symbol),1,dest);
 			dest->write(&decoded_symbol,sizeof(decoded_symbol),1);
 		}
 	}
@@ -311,7 +300,6 @@ void write_bit(OutputStream *fp, char c)
 	if (g_bit_index == -1)
 	{
 //		printf("g_bitstring written[%d]\n", g_bitstring);
-//		fwrite(&g_bitstring, sizeof(BYTE), 1, fp);
 		fp->write(&g_bitstring, sizeof(BYTE), 1);
 		g_bitstring = 0;
 		g_bit_index = 7;
@@ -411,7 +399,6 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 			{
 //				printf("decoded symbol[%c]\n", decoded_symbol);
 				
-//				fwrite(&decoded_symbol,sizeof(decoded_symbol),1,outputFile);
 				outputFile->write(&decoded_symbol,sizeof(decoded_symbol),1);
 			}
 
@@ -448,7 +435,6 @@ int process_bwt_encode_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 		bwt_encoding_read_bytes(read_buffer,&bytes_read,sizeof(read_buffer));
 
-//		fwrite(read_buffer,sizeof(BYTE),bytes_read,outputFile);
 		outputFile->write(read_buffer,sizeof(BYTE),bytes_read);
 	}
 	while (symbols_written > 0 || bytes_read > 0);
@@ -476,7 +462,6 @@ int process_bwt_decode_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 		bwt_decoding_read_symbols(read_buffer,&symbols_read,sizeof(read_buffer));
 
-//		fwrite(read_buffer,sizeof(BYTE),symbols_read,outputFile);
 		outputFile->write(read_buffer,sizeof(BYTE),symbols_read);
 	//	printf("\t[%d][%d]\n",bytes_written,symbols_read);
 

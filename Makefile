@@ -6,7 +6,7 @@ SOURCES=compressor.cpp dictionary.cpp burrows_wheeler.cpp InputStream.cpp Output
 OBJECTS=$(SOURCES:.cpp=.o)
 EXECUTABLE=compressor
 
-TEST_FILE=compressor
+TEST_FILE=test.txt
 
 all: $(EXECUTABLE)
 
@@ -19,6 +19,8 @@ $(EXECUTABLE): $(OBJECTS)
 clean:
 	-rm $(EXECUTABLE)
 	-rm $(OBJECTS)
+	-rm dest
+	-rm dest2
 
 run:
 	./$(EXECUTABLE) c $(TEST_FILE) dest
