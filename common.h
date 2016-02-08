@@ -13,6 +13,9 @@
 #define BYTE unsigned char
 
 
+enum SEEK_MODE {SEEK_BEGINNING, SEEK_CURRENT, SEEK_ENDING};
+
+
 struct symbol
 {
 	BYTE m_value;
