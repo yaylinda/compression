@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
 
 			if (compress)
 			{
-				performance_test = perform_compression(ALGORITHM_HUFFMAN,source,dest);
+				performance_test = perform_compression(ALGORITHM_ARITHMETIC,source,dest);
 
 			}
 			else
@@ -154,6 +154,7 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 
 	if (process_file_test)
 	{
+		printf("Dictionary built..\n");
 	//					print_dictionary(g_meta.m_dictionary);
 
 		//process the input file to the output file
@@ -353,7 +354,10 @@ int process_compress_buffer(OutputStream *outputFile, const BYTE *source_buffer,
 		sym.m_value = source_buffer[i];
 		representation = encode_symbol_to_bitstring(g_meta.m_dictionary,sym);
 		write_bits_representation(outputFile,representation);
-	}	
+
+//		printf("symbol [%c] is represented as [%s]\n\n",sym.m_value,representation == NULL ? "NULL" : representation);
+	}
+
 	return -1;
 }
 
