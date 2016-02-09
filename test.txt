@@ -1,1 +1,6 @@
-aaabc
+Scene 1
+
+      [wind]
+      [clop clop]
+  ARTHUR:  Whoa there!
+      [clop clop]

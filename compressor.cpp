@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
 
 			if (compress)
 			{
-				performance_test = perform_compression(ALGORITHM_HUFFMAN,source,dest);
+				performance_test = perform_compression(ALGORITHM_ARITHMETIC,source,dest);
 
 			}
 			else
@@ -212,7 +212,7 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 			dest->seek(0, SEEK_ENDING);
 		}
 
-//		printf("total_bits[%d]  remainder bits[%d]\n", g_total_bits,g_meta.m_compressed_stream.m_number_of_remainder_bits);
+		printf("total_bits[%d]  remainder bits[%d]\n", g_total_bits,g_meta.m_compressed_stream.m_number_of_remainder_bits);
 
 		result = true;
 	}
@@ -282,7 +282,7 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 
 		if (useful_flush == true)
 		{
-//			printf("decoded symbol[%c]\n", decoded_symbol.m_value);
+			printf("decoded symbol[%c]\n", decoded_symbol.m_value);
 			dest->write(&decoded_symbol,sizeof(decoded_symbol),1);
 		}
 	}
@@ -406,7 +406,7 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 			if (test == true)
 			{
-//				printf("decoded symbol[%c]\n", decoded_symbol.m_value);
+				// printf("decoded symbol[%c]\n", decoded_symbol.m_value);
 				
 				outputFile->write(&decoded_symbol,sizeof(decoded_symbol),1);
 			}
