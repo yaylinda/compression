@@ -60,6 +60,7 @@ struct arithmetic_structure
 	DWORD *m_lower_precision;
 	DWORD *m_higher_precision;
 	int m_total_symbols;
+	int m_total_symbols_decoded;
 
 	DWORD m_interval_low;
 	DWORD m_interval_high;
@@ -69,6 +70,8 @@ struct arithmetic_structure
 	int m_bit_buffer_index;
 	DWORD m_z;
 	bool m_is_z_initialized;
+
+
 };
 
 struct dictionary_internal
@@ -93,6 +96,8 @@ struct dictionary_internal
 
 /////////////////////////////
 // Private Prototypes
+void initialize_arithmetic_z(DICTIONARY dictionary);
+
 void rescale_half(struct dictionary_internal *dictionary, char bit_representation);
 void rescale_quarter(struct dictionary_internal *dictionary, char bit_representation);
 int find_symbol_index(struct dictionary_internal *dictionary,struct symbol sym);
@@ -218,6 +223,7 @@ bool finalize_dictionary(DICTIONARY dictionary)
 			alias->m_arithmetic.m_lower_precision = (DWORD *)malloc(sizeof(DWORD) * alias->m_num_symbols);
 			alias->m_arithmetic.m_higher_precision = (DWORD *)malloc(sizeof(DWORD) * alias->m_num_symbols);
 			alias->m_arithmetic.m_total_symbols = 0;
+			alias->m_arithmetic.m_total_symbols_decoded = 0;
 			alias->m_arithmetic.m_interval_low = NONE_OF_THE_WAY;
 			alias->m_arithmetic.m_interval_high = ALL_THE_WAY;
 			alias->m_arithmetic.m_num_splits = 0;
@@ -240,6 +246,7 @@ bool finalize_dictionary(DICTIONARY dictionary)
 
 			alias->m_arithmetic.m_total_symbols = previous_count;
 
+			result = true;
 //			printf("total symbols[%d]  num symbols[%d]\n",alias->m_arithmetic.m_total_symbols, alias->m_num_symbols);
 		}
 	}
@@ -250,25 +257,52 @@ bool finalize_dictionary(DICTIONARY dictionary)
 }
 
 
+void print_bytes(const char *identifying_string,int num_bytes,BYTE *bytes)
+{
+	int i;
+
+	printf("%s = {",identifying_string);
+
+	for (i = 0;i < num_bytes;i++)
+	{
+		if (i > 0)
+		{
+			printf(" - ");
+		}
+		printf("[%d][%d] ",i, bytes[i]);
+	}
+
+	printf("}\n");
+}
+
 void serialize_dictionary_to_bytes(DICTIONARY dictionary,int *num_bytes,BYTE **bytes)
 {
 	struct dictionary_internal *alias;
 	BYTE *cursor;
 
+
+//	print_dictionary(dictionary);
 	alias = (struct dictionary_internal *)dictionary;
 
-	*num_bytes = sizeof(int) + (alias->m_num_symbols * sizeof(struct symbol_info));
+	*num_bytes = sizeof(((struct dictionary_internal *)NULL)->m_algorithm_id);
+
+	*num_bytes += sizeof(((struct dictionary_internal *)NULL)->m_num_symbols);
+
+	*num_bytes += (alias->m_num_symbols * sizeof(struct symbol_info));
+
 	*bytes = (BYTE *)malloc(sizeof(BYTE) * *num_bytes);
 	cursor = *bytes;
 
-	memcpy(cursor,&(alias->m_algorithm_id),sizeof(alias->m_algorithm_id));
-	cursor += sizeof(alias->m_algorithm_id);
+	memcpy(cursor,&(alias->m_algorithm_id),sizeof(((struct dictionary_internal *)NULL)->m_algorithm_id));
+	cursor += sizeof(((struct dictionary_internal *)NULL)->m_algorithm_id);
 
-	memcpy(cursor,&(alias->m_num_symbols),sizeof(int));
+	memcpy(cursor,&(alias->m_num_symbols),sizeof(((struct dictionary_internal *)NULL)->m_num_symbols));
 	cursor += sizeof(alias->m_num_symbols);
 
 	memcpy(cursor,alias->m_symbols,(alias->m_num_symbols * sizeof(struct symbol_info)));
 	cursor += alias->m_num_symbols * sizeof(struct symbol_info);
+
+//	print_bytes("serialized dictionary bytes",*num_bytes,*bytes);
 }
 
 
@@ -279,22 +313,24 @@ DICTIONARY deserialize_bytes_to_dictionary(int num_bytes,BYTE *bytes)
 	BYTE *cursor;
 	struct dictionary_internal *alias;
 
-	alias = (struct dictionary_internal *)result;
+//	print_bytes("deserialized dictionary bytes",num_bytes,bytes);
+
 	cursor = bytes;
 
-	memcpy(&algorithm_id,cursor,sizeof(alias->m_algorithm_id));
-	cursor += sizeof(alias->m_algorithm_id);
+	memcpy(&algorithm_id,cursor,sizeof(((struct dictionary_internal *)NULL)->m_algorithm_id));
+	cursor += sizeof(((struct dictionary_internal *)NULL)->m_algorithm_id);
 
 	result = create_dictionary(algorithm_id);
 	alias = (struct dictionary_internal *)result;
 
-
 	memcpy(&(alias->m_num_symbols),cursor,sizeof(alias->m_num_symbols));
 	cursor += sizeof(alias->m_num_symbols);
+
 
 	alias->m_symbols = (struct symbol_info *)malloc(sizeof(struct symbol_info) * alias->m_num_symbols);
 	memcpy(alias->m_symbols,cursor,sizeof(struct symbol_info) * alias->m_num_symbols);
 	cursor += sizeof(struct symbol_info) * alias->m_num_symbols;
+
 
 	bool test;
 
@@ -302,6 +338,10 @@ DICTIONARY deserialize_bytes_to_dictionary(int num_bytes,BYTE *bytes)
 	if (test == false)
 	{
 		result = NULL;
+	}
+	else
+	{
+//		print_dictionary(result);
 	}
 
 	return result;
@@ -478,6 +518,7 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 
 	result = false;
 
+//	printf("decode consume bit[%p]\n",dictionary);
 	alias = (struct dictionary_internal *)dictionary;
 
 	if (alias->m_algorithm_id == ALGORITHM_HUFFMAN)
@@ -507,6 +548,7 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 		{
 			if (alias->m_arithmetic.m_bit_buffer_index < 32)
 			{
+//				printf("consume bit[%c][%p][%d]\n",bit_representation,alias->m_arithmetic.m_bit_buffer,alias->m_arithmetic.m_bit_buffer_index);
 				alias->m_arithmetic.m_bit_buffer[alias->m_arithmetic.m_bit_buffer_index] = bit_representation;
 				alias->m_arithmetic.m_bit_buffer_index++;
 			}
@@ -514,18 +556,7 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 			{
 				if (alias->m_arithmetic.m_is_z_initialized == false)
 				{
-					int pos;
-
-					alias->m_arithmetic.m_z = 0;
-					for (pos = 0; pos < alias->m_arithmetic.m_bit_buffer_index; pos++)
-					{
-						if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
-						{
-							alias->m_arithmetic.m_z |= (1 << (32 - pos));
-						}
-					}
-
-					alias->m_arithmetic.m_is_z_initialized = true;
+					initialize_arithmetic_z(dictionary);
 				}
 				else
 				{
@@ -555,7 +586,10 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 								alias->m_arithmetic.m_interval_low = a0;
 								alias->m_arithmetic.m_interval_high = b0;
 								*decoded_symbol = alias->m_symbols[j].m_symbol;
+
 								result = true; // symbol found!
+								alias->m_arithmetic.m_total_symbols_decoded++;
+
 								break;
 							}
 						}
@@ -569,10 +603,15 @@ bool decode_consume_bit(DICTIONARY dictionary,char bit_representation, struct sy
 	return result;
 }
 
+
+
 bool decode_consume_bit_flush(DICTIONARY dictionary, struct symbol *decoded_symbol)
 {
 	struct dictionary_internal *alias;
 	bool result;
+
+
+//	printf("decode consume bit flush\n");
 
 	alias = (struct dictionary_internal *)dictionary;
 	result = false;
@@ -582,49 +621,44 @@ bool decode_consume_bit_flush(DICTIONARY dictionary, struct symbol *decoded_symb
 
 		if (alias->m_arithmetic.m_is_z_initialized == false)
 		{
-			int pos;
-
-			alias->m_arithmetic.m_z = 0;
-			for (pos = 0; pos < alias->m_arithmetic.m_bit_buffer_index; pos++)
-			{
-				if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
-				{
-					alias->m_arithmetic.m_z |= (1 << (32 - pos));
-				}
-			}
-
-			alias->m_arithmetic.m_is_z_initialized = true;
+			initialize_arithmetic_z(dictionary);
 		}
 
 
-		if (!SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low) 
-			&& !SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
+		while (alias->m_arithmetic.m_total_symbols_decoded < alias->m_arithmetic.m_total_symbols && result == false)
 		{
-			int j;
-			// decode a symbol
-			for (j=0; j<alias->m_num_symbols; j++)
+			if (!SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low) 
+				&& !SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
 			{
-				DWORD diff;
-				DWORD b0;
-				DWORD a0;
-
-				diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
-
-				b0 = alias->m_arithmetic.m_interval_low + (diff * alias->m_arithmetic.m_higher_precision[j])/alias->m_arithmetic.m_total_symbols;
-				a0 = alias->m_arithmetic.m_interval_low + (diff * alias->m_arithmetic.m_lower_precision[j])/alias->m_arithmetic.m_total_symbols;
-
-				if (a0 <= alias->m_arithmetic.m_z && alias->m_arithmetic.m_z < b0)
+//				printf("yay high[%llu] low[%llu]  num symbols[%d]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low, alias->m_num_symbols);
+				int j;
+				// decode a symbol
+				for (j=0; j<alias->m_num_symbols; j++)
 				{
-					alias->m_arithmetic.m_interval_low = a0;
-					alias->m_arithmetic.m_interval_high = b0;
-					*decoded_symbol = alias->m_symbols[j].m_symbol;
-					result = true; // symbol found!
-					break;
+					DWORD diff;
+					DWORD b0;
+					DWORD a0;
+
+					diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
+
+					b0 = alias->m_arithmetic.m_interval_low + (diff * alias->m_arithmetic.m_higher_precision[j])/alias->m_arithmetic.m_total_symbols;
+					a0 = alias->m_arithmetic.m_interval_low + (diff * alias->m_arithmetic.m_lower_precision[j])/alias->m_arithmetic.m_total_symbols;
+
+					if (a0 <= alias->m_arithmetic.m_z && alias->m_arithmetic.m_z < b0)
+					{
+						alias->m_arithmetic.m_interval_low = a0;
+						alias->m_arithmetic.m_interval_high = b0;
+						*decoded_symbol = alias->m_symbols[j].m_symbol;
+						result = true; // symbol found!
+						alias->m_arithmetic.m_total_symbols_decoded++;
+
+						break;
+					}
 				}
 			}
+			// rescale_half(alias, bit_representation);
+			// rescale_quarter(alias, bit_representation);
 		}
-		// rescale_half(alias, bit_representation);
-		// rescale_quarter(alias, bit_representation);
 	}
 
 	return result;
@@ -653,6 +687,30 @@ void print_dictionary(DICTIONARY dictionary)
 
 /////////////////////////////
 // Private Functions
+void initialize_arithmetic_z(DICTIONARY dictionary)
+{
+	struct dictionary_internal *alias;
+	int pos;
+
+
+	alias = (struct dictionary_internal *)dictionary;
+
+	assert(alias->m_arithmetic.m_is_z_initialized == false);
+
+	alias->m_arithmetic.m_z = 0;
+
+	for (pos = 0; pos < alias->m_arithmetic.m_bit_buffer_index; pos++)
+	{
+		if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
+		{
+			alias->m_arithmetic.m_z = alias->m_arithmetic.m_z | (1 << (alias->m_arithmetic.m_bit_buffer_index - pos - 1));
+		}
+	}
+
+//	printf("m_bit_buffer[%s] m_z[%lld]  alias->m_arithmetic.m_bit_buffer_index[%d]\n",alias->m_arithmetic.m_bit_buffer,alias->m_arithmetic.m_z, alias->m_arithmetic.m_bit_buffer_index);
+	alias->m_arithmetic.m_is_z_initialized = true;
+}
+
 
 void rescale_half(struct dictionary_internal *dictionary, char bit_representation)
 {

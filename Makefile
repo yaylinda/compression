@@ -24,6 +24,8 @@ clean:
 
 run:
 	./$(EXECUTABLE) c $(TEST_FILE) dest
+	echo
 	./$(EXECUTABLE) d dest dest2
+	echo
 	diff $(TEST_FILE) dest2
 

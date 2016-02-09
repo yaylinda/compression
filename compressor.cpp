@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
 
 			if (compress)
 			{
-				performance_test = perform_compression(ALGORITHM_ARITHMETIC,source,dest);
+				performance_test = perform_compression(ALGORITHM_HUFFMAN,source,dest);
 
 			}
 			else
@@ -164,7 +164,7 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 
 		dest->write(&g_meta.m_magic_number,sizeof(g_meta.m_magic_number),1);
 		dest->write(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1);
-		dest->write(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1);
+//		dest->write(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1);
 
 		{
 			int num_dictionary_bytes;
@@ -194,6 +194,7 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 
 			flush_representation = encode_symbol_to_bitstring_flush(g_meta.m_dictionary);
 			write_bits_representation(dest, flush_representation);
+//			printf("flushed bits represented as [%s]\n\n",flush_representation == NULL ? "NULL" : flush_representation);
 		}
 
 
@@ -208,11 +209,10 @@ bool perform_compression(BYTE algorithm_id, InputStream *source, OutputStream *d
 
 			dest->seek(remainder_bits_position,SEEK_BEGINNING);
 			dest->write(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(BYTE), 1);
-	//				printf("number of remainder bits written[%d]\n", g_meta.m_compressed_stream.m_number_of_remainder_bits);
 			dest->seek(0, SEEK_ENDING);
 		}
 
-		printf("total_bits[%d]\n", g_total_bits);
+//		printf("total_bits[%d]  remainder bits[%d]\n", g_total_bits,g_meta.m_compressed_stream.m_number_of_remainder_bits);
 
 		result = true;
 	}
@@ -236,8 +236,8 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 	assert(g_meta.m_magic_number == MAGIC_NUMBER);
 	source->read(&g_meta.m_version_number,sizeof(g_meta.m_version_number),1);
 	assert(g_meta.m_version_number == VERSION);
-	source->read(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1);
-	assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN || g_meta.m_algorithm_id == ALGORITHM_ARITHMETIC);
+//	source->read(&g_meta.m_algorithm_id,sizeof(g_meta.m_algorithm_id),1);
+//	assert(g_meta.m_algorithm_id == ALGORITHM_HUFFMAN || g_meta.m_algorithm_id == ALGORITHM_ARITHMETIC);
 
 
 	{
@@ -250,13 +250,15 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 
 		g_meta.m_dictionary = deserialize_bytes_to_dictionary(num_dictionary_bytes,dictionary_bytes);
 
+		assert(g_meta.m_dictionary != NULL);
+
 		free(dictionary_bytes);
 	}
 
 
 
 	source->read(&g_meta.m_compressed_stream.m_number_of_remainder_bits, sizeof(g_meta.m_compressed_stream.m_number_of_remainder_bits), 1);
-//			printf("number of remainder bits written[%d]\n", g_meta.m_compressed_stream.m_number_of_remainder_bits);
+//	printf("number of remainder bits existing in source file[%d]\n", g_meta.m_compressed_stream.m_number_of_remainder_bits);
 
 	
 	int cur;
@@ -266,22 +268,25 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 	g_remainder_bits_position_within_source_buffer = source->tell() - cur;
 	source->seek(cur,SEEK_BEGINNING);
 
-
+//	printf("before process\n");
 	process_file(source, dest, process_decompress_buffer, get_file_size(source)-cur);
+//	printf("after process\n");
 
-	//do flusing if we should need to
+
+	bool useful_flush;
+	do
 	{
-		bool test;
 		struct symbol decoded_symbol;
 
-		test = decode_consume_bit_flush(g_meta.m_dictionary,&decoded_symbol);
+		useful_flush = decode_consume_bit_flush(g_meta.m_dictionary,&decoded_symbol);
 
-		if (test == true)
+		if (useful_flush == true)
 		{
-//				printf("decoded symbol[%c]\n", decoded_symbol);
+//			printf("decoded symbol[%c]\n", decoded_symbol.m_value);
 			dest->write(&decoded_symbol,sizeof(decoded_symbol),1);
 		}
 	}
+	while(useful_flush == true);
 
 	return result;
 }
@@ -370,7 +375,7 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 //	printf("**********decompress buffer\n");
 
-//	printf("s_current_processed_total [%d]\n", s_current_processed_total);
+//	printf("s_current_processed_total [%d]  current buffer size[%d]\n", s_current_processed_total,process_size);
 
 	for (i = 0; i < process_size; i++)
 	{
@@ -380,7 +385,7 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 		cur_byte = source_buffer[i];
 
-		// printf("cur_byte[%d][%c]\n", cur_byte, cur_byte);
+//		 printf("cur_byte[%d][%c]\n", cur_byte, cur_byte);
 
 
 		for (j = 7;j >= 0;j--)
@@ -401,7 +406,7 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 			if (test == true)
 			{
-//				printf("decoded symbol[%c]\n", decoded_symbol);
+//				printf("decoded symbol[%c]\n", decoded_symbol.m_value);
 				
 				outputFile->write(&decoded_symbol,sizeof(decoded_symbol),1);
 			}
