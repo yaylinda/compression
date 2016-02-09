@@ -96,6 +96,8 @@ struct dictionary_internal
 
 /////////////////////////////
 // Private Prototypes
+DWORD round_div(DWORD dividend, DWORD divisor);
+
 void initialize_arithmetic_z(DICTIONARY dictionary);
 bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool advance_z, char bit_representation);
 
@@ -366,11 +368,6 @@ void wonky_fill_in(char *buffer,char first,char rest,int rest_count)
 }
 
 
-DWORD round_div(DWORD dividend, DWORD divisor)
-{
-    return (dividend + (divisor / 2)) / divisor;
-}
-
 
 
 static char s_working_buffer[MAX_REPRESENTATION_LENGTH];
@@ -409,39 +406,49 @@ const char *encode_symbol_to_bitstring(DICTIONARY dictionary,struct symbol sym)
 			diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
 			symbol_index = find_symbol_index(alias, sym);
 
-//			printf("before interval high[%llu]  interval low[%llu] symbol[%c] symbol_higher[%llu] symbol_lower[%llu]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low, sym.m_value, alias->m_arithmetic.m_higher_precision[symbol_index],alias->m_arithmetic.m_lower_precision[symbol_index]);
+
+			printf("before  high[%llu]  low[%llu] symbol[%c]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low, sym.m_value);
 
 			higher_precision = diff * alias->m_arithmetic.m_higher_precision[symbol_index];
 			lower_precision = diff * alias->m_arithmetic.m_lower_precision[symbol_index];
+
+			printf("HMM hp[%llu]  lp[%llu] diff[%llu]  si[%d]\n",alias->m_arithmetic.m_higher_precision[symbol_index],alias->m_arithmetic.m_lower_precision[symbol_index],diff,symbol_index);
 
 			alias->m_arithmetic.m_interval_high = alias->m_arithmetic.m_interval_low + round_div(higher_precision, alias->m_arithmetic.m_total_symbols);
 			alias->m_arithmetic.m_interval_low = alias->m_arithmetic.m_interval_low + round_div(lower_precision, alias->m_arithmetic.m_total_symbols);
 
 			write_index = 0;
 
-//			printf("after interval high[%llu]  interval low[%llu]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low);
+			printf("after  high[%llu]  low[%llu]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low);
 
 //			printf("after[%llu][%llu][%llu][%llu][%d]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low,higher_precision,lower_precision,symbol_index);
 
 			// rescaling half
 			while (SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
 			{
-//				printf("scaling1! [%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+				printf("\tscaling1 half! [%llu][%llu]  numsplits[%d]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low,alias->m_arithmetic.m_num_splits);
 				assert(write_index < MAX_REPRESENTATION_LENGTH);
 
 				if (alias->m_arithmetic.m_interval_high < HALF_WAY)
 				{
+					printf("\t\thigh is too low\n");
+
 					//flush some encoding back to our caller
 					wonky_fill_in(&(s_working_buffer[write_index]),'0','1',alias->m_arithmetic.m_num_splits);
 					write_index += 1 + alias->m_arithmetic.m_num_splits;
-					result = s_working_buffer;
 
 					alias->m_arithmetic.m_interval_low = alias->m_arithmetic.m_interval_low * 2;
 					alias->m_arithmetic.m_interval_high = alias->m_arithmetic.m_interval_high * 2;
 					alias->m_arithmetic.m_num_splits = 0;
+
+					result = s_working_buffer;
+
+					printf("\t\tnew vals[%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
 				}
 				else if (alias->m_arithmetic.m_interval_low > HALF_WAY)
 				{
+					printf("\t\tlow is too high\n");
+
 					wonky_fill_in(&(s_working_buffer[write_index]),'1','0',alias->m_arithmetic.m_num_splits);
 					write_index += 1 + alias->m_arithmetic.m_num_splits;
 
@@ -450,8 +457,15 @@ const char *encode_symbol_to_bitstring(DICTIONARY dictionary,struct symbol sym)
 					alias->m_arithmetic.m_num_splits = 0;
 
 					result = s_working_buffer;
+					printf("\t\tnew vals[%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+				}
+				else
+				{
+					assert(!"shouldn't be here!");
 				}
 			}
+
+			assert(write_index < MAX_REPRESENTATION_LENGTH);
 
 //			printf("finished scaling1!\n");
 
@@ -459,7 +473,7 @@ const char *encode_symbol_to_bitstring(DICTIONARY dictionary,struct symbol sym)
 			// rescaling quarter
 			while (SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
 			{
-//				printf("scaling2! [%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+				printf("\tscaling quarter! [%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
 
 				alias->m_arithmetic.m_interval_low = 2 * (alias->m_arithmetic.m_interval_low - ONE_QUARTER);
 				alias->m_arithmetic.m_interval_high = 2 * (alias->m_arithmetic.m_interval_high - ONE_QUARTER);
@@ -505,7 +519,7 @@ const char *encode_symbol_to_bitstring_flush(DICTIONARY dictionary)
 
 			result = s_working_buffer;
 
-//			printf("flushing [%s]\n",result);
+			printf("flushing [%s]\n",result);
 		}
 	}
 
@@ -568,7 +582,7 @@ bool decode_consume_bit_flush(DICTIONARY dictionary, struct symbol *decoded_symb
 	bool result;
 
 
-	// printf("decode consume bit flush\n");
+	 printf("decode consume bit flush\n");
 
 	alias = (struct dictionary_internal *)dictionary;
 
@@ -593,18 +607,24 @@ void print_dictionary(DICTIONARY dictionary)
 
 	for (i = 0;i < alias->m_num_symbols;i++)
 	{
-//		printf("symbol[%d], frequency[%d]\n", alias->m_symbols[i].m_symbol.m_value, alias->m_symbols[i].m_count);
+		printf("symbol[%d], frequency[%d]\n", alias->m_symbols[i].m_symbol.m_value, alias->m_symbols[i].m_count);
 		total += alias->m_symbols[i].m_count;
 	}
 
-//	printf("num distinct symbols[%d]\n", alias->m_num_symbols);
-//	printf("total in print freq[%d]\n", total);
+	printf("num distinct symbols[%d]\n", alias->m_num_symbols);
+	printf("total in print freq[%d]\n", total);
 }
 
 
 
 /////////////////////////////
 // Private Functions
+DWORD round_div(DWORD dividend, DWORD divisor)
+{
+    return (dividend + (divisor / 2)) / divisor;
+}
+
+
 void initialize_arithmetic_z(DICTIONARY dictionary)
 {
 	struct dictionary_internal *alias;
@@ -621,10 +641,13 @@ void initialize_arithmetic_z(DICTIONARY dictionary)
 		if (alias->m_arithmetic.m_bit_buffer[pos] == '1')
 		{
 			alias->m_arithmetic.m_z = alias->m_arithmetic.m_z | (1 << (32 - pos - 1));
+//			printf("m_bit_buffer[%s] m_z[%lld]  alias->m_arithmetic.m_bit_buffer_index[%d]\n",alias->m_arithmetic.m_bit_buffer,alias->m_arithmetic.m_z, alias->m_arithmetic.m_bit_buffer_index);
 		}
 	}
 
-//	printf("m_bit_buffer[%s] m_z[%lld]  alias->m_arithmetic.m_bit_buffer_index[%d]\n",alias->m_arithmetic.m_bit_buffer,alias->m_arithmetic.m_z, alias->m_arithmetic.m_bit_buffer_index);
+	printf("m_bit_buffer[%s] m_z[%lld]  alias->m_arithmetic.m_bit_buffer_index[%d]\n",alias->m_arithmetic.m_bit_buffer,alias->m_arithmetic.m_z, alias->m_arithmetic.m_bit_buffer_index);
+	printf("final m_z[%lld]\n",alias->m_arithmetic.m_z);
+
 	alias->m_arithmetic.m_is_z_initialized = true;
 }
 
@@ -645,6 +668,9 @@ bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool
 	{
 		int j;
 
+		printf("before  high[%llu]  low[%llu]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low);
+
+
 		for (j=0; j<alias->m_num_symbols; j++)
 		{
 			// printf("-----------------\n");
@@ -657,13 +683,17 @@ bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool
 			DWORD b0;
 			DWORD a0;
 
+
+
 			diff = alias->m_arithmetic.m_interval_high - alias->m_arithmetic.m_interval_low;
+
 
 			higher_precision = diff * alias->m_arithmetic.m_higher_precision[j];
 			lower_precision = diff * alias->m_arithmetic.m_lower_precision[j];
 
 			b0 = alias->m_arithmetic.m_interval_low + round_div(higher_precision, alias->m_arithmetic.m_total_symbols);
 			a0 = alias->m_arithmetic.m_interval_low + round_div(lower_precision, alias->m_arithmetic.m_total_symbols);
+
 
 			// printf("z[%llu]\n", alias->m_arithmetic.m_z);
 			// printf("low[%llu]\n", a0);
@@ -673,6 +703,7 @@ bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool
 
 			if (a0 <= alias->m_arithmetic.m_z && alias->m_arithmetic.m_z < b0)
 			{
+				printf("HOWDY  a0[%llu]  z[%llu]  b[%llu]\n",a0,alias->m_arithmetic.m_z,b0);
 				alias->m_arithmetic.m_interval_low = a0;
 				alias->m_arithmetic.m_interval_high = b0;
 				*decoded_symbol = alias->m_symbols[j].m_symbol;
@@ -680,37 +711,47 @@ bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool
 				alias->m_arithmetic.m_total_symbols_decoded++;
 				break;
 			}
-
 		}
+
+
+		printf("after  high[%llu]  low[%llu]\n",alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low);
+
 
 		// rescaling half
 		while (SHOULD_SCALE_HALF(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
 		{
-			// printf("scaling half! [%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+			printf("\tscaling half! [%llu][%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low,alias->m_arithmetic.m_z);
 
 			if (alias->m_arithmetic.m_interval_high < HALF_WAY)
 			{
+				printf("\t\thigh is too low\n");
 				alias->m_arithmetic.m_interval_low = alias->m_arithmetic.m_interval_low * 2;
 				alias->m_arithmetic.m_interval_high = alias->m_arithmetic.m_interval_high * 2;
 				alias->m_arithmetic.m_z = alias->m_arithmetic.m_z * 2;
+				printf("\t\tnew vals[%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+
 			}
 
 			else if (alias->m_arithmetic.m_interval_low > HALF_WAY)
 			{
+				printf("\t\tlow is too high\n");
 				alias->m_arithmetic.m_interval_low = 2 * (alias->m_arithmetic.m_interval_low - HALF_WAY);
 				alias->m_arithmetic.m_interval_high = 2 * (alias->m_arithmetic.m_interval_high - HALF_WAY);
 				alias->m_arithmetic.m_z = 2 * (alias->m_arithmetic.m_z - HALF_WAY);
+				printf("\t\tnew vals[%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
 			}
 
 			if (advance_z && bit_representation == '1')
 			{
+				printf("\t\tincrementing z\n");
+				assert(alias->m_arithmetic.m_z % 2 == 0);
 				alias->m_arithmetic.m_z++;
 			}
 		}
 
 		while (SHOULD_SCALE_QUARTER(alias->m_arithmetic.m_interval_high, alias->m_arithmetic.m_interval_low))
 		{
-			// printf("scaling quarter! [%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low);
+			printf("\tscaling quarter! [%llu][%llu][%llu]\n",alias->m_arithmetic.m_interval_high,alias->m_arithmetic.m_interval_low,alias->m_arithmetic.m_z);
 
 			alias->m_arithmetic.m_interval_low = 2 * (alias->m_arithmetic.m_interval_low - ONE_QUARTER);
 			alias->m_arithmetic.m_interval_high = 2 * (alias->m_arithmetic.m_interval_high - ONE_QUARTER);
@@ -718,6 +759,7 @@ bool decode_iteration(DICTIONARY dictionary, struct symbol *decoded_symbol, bool
 
 			if (advance_z && bit_representation == '1')
 			{
+				assert(alias->m_arithmetic.m_z % 2 == 0);
 				alias->m_arithmetic.m_z++;
 			}
 		}

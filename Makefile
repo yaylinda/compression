@@ -7,6 +7,7 @@ OBJECTS=$(SOURCES:.cpp=.o)
 EXECUTABLE=compressor
 
 TEST_FILE=test.txt
+PYTEST_FILE=pytest.txt
 
 all: $(EXECUTABLE)
 
@@ -21,6 +22,8 @@ clean:
 	-rm $(OBJECTS)
 	-rm dest
 	-rm dest2
+	-rm pydest
+	-rm pydest2
 
 run:
 	./$(EXECUTABLE) c $(TEST_FILE) dest
@@ -28,4 +31,11 @@ run:
 	./$(EXECUTABLE) d dest dest2
 	echo
 	diff $(TEST_FILE) dest2
+
+gold:
+	python arithmetic_encoding.py c $(PYTEST_FILE) pydest
+	echo
+	python arithmetic_encoding.py d pydest pydest2
+	echo
+	diff $(PYTEST_FILE) pydest2
 

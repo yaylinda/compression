@@ -282,7 +282,7 @@ bool perform_decompression(InputStream *source, OutputStream *dest)
 
 		if (useful_flush == true)
 		{
-			printf("decoded symbol[%c]\n", decoded_symbol.m_value);
+			printf("decoded flush symbol[%c]\n", decoded_symbol.m_value);
 			dest->write(&decoded_symbol,sizeof(decoded_symbol),1);
 		}
 	}
@@ -316,7 +316,7 @@ void write_bits_representation(OutputStream *fp, const char *representation)
 {
 	if (representation != NULL)
 	{
-//		printf("symbol[%c], representation[%s]\n", sym.m_value, representation);
+		printf("representation[%s]\n", representation);
 
 		while (*representation != '\0')
 		{
@@ -354,7 +354,6 @@ int process_compress_buffer(OutputStream *outputFile, const BYTE *source_buffer,
 	{
 		struct symbol sym;
 		const char *representation;
-		int j;
 
 		sym.m_value = source_buffer[i];
 		representation = encode_symbol_to_bitstring(g_meta.m_dictionary,sym);
@@ -406,7 +405,7 @@ int process_decompress_buffer(OutputStream *outputFile, const BYTE *source_buffe
 
 			if (test == true)
 			{
-				// printf("decoded symbol[%c]\n", decoded_symbol.m_value);
+				printf("decoded symbol[%c]\n", decoded_symbol.m_value);
 				
 				outputFile->write(&decoded_symbol,sizeof(decoded_symbol),1);
 			}
